@@ -64,10 +64,13 @@ def loss_fn(logits, label, mean, logv, anneal_function, step, k, x0):
     return NLL_loss, KL_loss, KL_weight
 
 
-while epoch < 3:
+while epoch < 5:
+    epoch += 1
     for i in range(len(m_lama_organized)):
-        step = i + 1
+        step = step +  1
         batch = m_lama_organized[i * batch_size : (i + 1) * batch_size]
+        if len(batch) == 0:
+            continue
         obj = [b[2] for b in batch]
         obj = XLM_tok(
             obj, padding=True,  return_tensors="pt"
@@ -87,22 +90,23 @@ while epoch < 3:
         adm_opt.zero_grad()
         loss.backward()
         adm_opt.step()
-        print(
-            "Loss %9.4f, NLL-Loss %9.4f, KL-Loss %9.4f, KL-Weight %6.3f"
-            % (
-                loss.item(),
-                NLL_loss.item() / batch_size,
-                KL_loss.item() / batch_size,
-                KL_weight,
+        if step %100 == 99:
+            print(
+                "Loss %9.4f, NLL-Loss %9.4f, KL-Loss %9.4f, KL-Weight %6.3f"
+                % (
+                    loss.item(),
+                    NLL_loss.item() / batch_size,
+                    KL_loss.item() / batch_size,
+                    KL_weight,
+                )
             )
-        )
-        wandb.log(
-            {
-                "loss": loss.item(),
-                "NLL_loss": NLL_loss.item() / batch_size,
-                "KL_loss": KL_loss.item() / batch_size,
-                "KL_weight": KL_weight,
-            }
-        )
-        if n % 1000 == 999:
+            wandb.log(
+                {
+                    "loss": loss.item(),
+                    "NLL_loss": NLL_loss.item() / batch_size,
+                    "KL_loss": KL_loss.item() / batch_size,
+                    "KL_weight": KL_weight,
+                }
+            )
+        if step % 1000 == 999:
             torch.save({"VAELens_model": VAELens_model}, "./VAELens_model")
