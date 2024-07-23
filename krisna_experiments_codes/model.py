@@ -73,6 +73,161 @@ class EncoderWrapper:
             new_prompt = new_prompt.replace('<mask>', self.tokenizer.mask_token)
             new_prompts.append(new_prompt)
         return new_prompts
+    
+    def measure_encoder_representations_cosine_similarity(self, og_sentences, possible_cs_sentences_candidates, selected_layers=[]):
+        self.model.eval()
+        cos_sims_per_layer = dict()
+        for og_sentence, possible_cs_sentence_candidates in tzip(og_sentences, possible_cs_sentences_candidates):
+            # single input:
+            if isinstance(og_sentence, str):
+                batched_input = [og_sentence]+possible_cs_sentence_candidates
+                #pdb.set_trace()
+                model_inputs = self.tokenizer(batched_input, return_tensors='pt', padding=True, truncation=True).to('cuda')
+       
+            # double input
+            else:
+                batched_input1 = [og_sentence[0]]
+                batched_input1 += [cand[0] for cand in possible_cs_sentence_candidates]
+                batched_input2 = [og_sentence[1]]
+                batched_input2 += [cand[1] for cand in possible_cs_sentence_candidates]
+                model_inputs = self.tokenizer(batched_input1, batched_input2, return_tensors='pt', padding=True, truncation=True).to('cuda')
+            with torch.no_grad():
+                outputs = self.model(**model_inputs, output_hidden_states=True)
+            hidden_states = outputs.hidden_states[1:]
+
+            for layer in selected_layers:
+                assert layer < len(hidden_states)
+                if layer not in cos_sims_per_layer:
+                    cos_sims_per_layer[layer] = []
+                current_hidden_states = hidden_states[layer].detach().cpu().numpy().mean(axis=1, keepdims=False)
+
+                og_representation = current_hidden_states[0]
+                og_representation = og_representation[np.newaxis,...]
+                cs_representations = current_hidden_states[1:]
+                
+                #pdb.set_trace()
+                og_norm = np.linalg.norm(og_representation, axis=1)
+                cs_norm = np.linalg.norm(cs_representations, axis=1)
+
+                sim_matrix = np.dot(og_representation, cs_representations.T)
+                
+                cos_sim = sim_matrix/(np.outer(og_norm, cs_norm) + 1e-9)
+                cos_sim = cos_sim.mean(axis=-1, keepdims=False)
+                cos_sims_per_layer[layer].append(cos_sim)
+        
+        for layer in cos_sims_per_layer.keys():
+            cos_sims_per_layer[layer] = sum(cos_sims_per_layer[layer])/len(cos_sims_per_layer[layer])
+        
+        return cos_sims_per_layer
+
+    def _find_span(self, input_ids_batch, target_word_input_ids_batch, pick_last=False):
+        span_positions_per_batch = []
+        for input_ids, target_word_input_ids in tzip(input_ids_batch, target_word_input_ids_batch):
+            #pdb.set_trace()
+            input_ids_lst = [int(token_id) for token_id in input_ids]
+            start_pos = input_ids_lst.index(target_word_input_ids[0])
+            possible_spans = []
+            for left_bound in range(start_pos, len(input_ids)):
+                for right_bound in range(len(input_ids)-1, left_bound-1, -1):
+                    input_ids_subset = input_ids[left_bound:right_bound+1]
+                    if len(input_ids_subset) != len(target_word_input_ids):
+                        continue
+                    match_values = [input_id_token==target_input_id_token for input_id_token, target_input_id_token in zip(input_ids_subset, target_word_input_ids)]
+                    if sum(match_values)==len(match_values):
+                        #pdb.set_trace()
+                        possible_spans.append([i for i in range(left_bound,right_bound+1)])
+
+            # some is the subset string
+            if len(possible_spans) == 0:
+                pdb.set_trace()
+            if pick_last:
+                span_positions_per_batch.append(possible_spans[-1])
+            else:
+                span_positions_per_batch.append(possible_spans[0])
+        return span_positions_per_batch
+
+    def extract_attention_scores_subj_obj(self, instances, batch_size=16, selected_layers=[]):
+        self.model.eval()
+        batch_cnt = len(instances)//batch_size
+        
+        for i in tqdm(range(0, batch_cnt), desc='batch'):
+
+            batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
+            
+            obj_labels = [instance['obj_label'] for instance in batch]
+            
+            mono_subj_labels = [instance['subj_label_same_lang'] for instance in batch]
+            cs_subj_labels = [instance['subj_label_cross_lang'] for instance in batch]
+
+            mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+            cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+
+            
+            all_mono_subj_tokens, mono_subj_token_lengths, _ = self._tokenize_obj(mono_subj_labels)
+            for i in range(len(all_mono_subj_tokens)):
+                all_mono_subj_tokens[i] = all_mono_subj_tokens[i][:mono_subj_token_lengths[i]]
+            
+            
+            all_cs_subj_tokens, cs_subj_token_lengths, _ = self._tokenize_obj(cs_subj_labels)
+            for i in range(len(all_cs_subj_tokens)):
+                all_cs_subj_tokens[i] = all_cs_subj_tokens[i][:cs_subj_token_lengths[i]]
+            
+            all_obj_tokens, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
+            for i in range(len(all_obj_tokens)):
+                all_obj_tokens[i] = all_obj_tokens[i][:obj_token_lengths[i]]
+            
+
+            mono_inputs = self.tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt')
+            cs_inputs = self.tokenizer(cs_prompts, padding=True, truncation=True, return_tensors='pt')
+            mono_subj_spans = self._find_span(mono_inputs['input_ids'], all_mono_subj_tokens, False)
+            cs_subj_spans = self._find_span(cs_inputs['input_ids'], all_cs_subj_tokens, False)
+            mono_obj_spans = self._find_span(mono_inputs['input_ids'], all_obj_tokens, True)
+            cs_obj_spans = self._find_span(cs_inputs['input_ids'], all_obj_tokens, True)
+
+            mono_inputs = mono_inputs.to('cuda')
+            cs_inputs = mono_inputs.to('cuda')
+            mono_attentions = self.model(**mono_inputs, output_attentions=True).attentions
+            cs_attentions = self.model(**cs_inputs, output_attentions=True).attentions
+
+            mono_attention_weights_per_layer = dict()
+            cs_attention_weights_per_layer = dict()
+            for layer in selected_layers:
+                if layer not in mono_attention_weights_per_layer:
+                    mono_attention_weights_per_layer[layer] = dict()
+                if layer not in cs_attention_weights_per_layer:
+                    cs_attention_weights_per_layer[layer] = dict()
+                assert layer < len(mono_attentions)
+                mono_attentions_spec_layer = mono_attentions[layer].detach().cpu().numpy()
+                cs_attention_spec_layer = cs_attentions[layer].detach().cpu().numpy()
+                for batch_idx in range(len(batch)):
+                    mono_tokens_attention = mono_attentions_spec_layer[batch_idx]
+                    cs_tokens_attention = cs_attention_spec_layer[batch_idx]
+                    #pdb.set_trace()
+                    mono_span_attention = mono_tokens_attention[:, mono_obj_spans[batch_idx][0]:mono_obj_spans[batch_idx][-1]+1, mono_subj_spans[batch_idx][0]:mono_subj_spans[batch_idx][-1]+1]
+                    cs_span_attention = cs_tokens_attention[:, cs_obj_spans[batch_idx][0]:cs_obj_spans[batch_idx][-1]+1, cs_subj_spans[batch_idx][0]:cs_subj_spans[batch_idx][-1]+1]
+
+                    mono_span_attention_weight_average_per_head = mono_span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False)
+                    cs_span_attention_weight_average_per_head = cs_span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False) #num_heads
+                    for head_pos, attention_weight_avg in enumerate(mono_span_attention_weight_average_per_head):
+                        if head_pos not in mono_attention_weights_per_layer[layer]:
+                            mono_attention_weights_per_layer[layer][head_pos] = []
+                        mono_attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+                    
+                    for head_pos, attention_weight_avg in enumerate(cs_span_attention_weight_average_per_head):
+                        if head_pos not in cs_attention_weights_per_layer[layer]:
+                            cs_attention_weights_per_layer[layer][head_pos] = []
+                        cs_attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+
+        for layer in selected_layers:
+            for head_pos in mono_attention_weights_per_layer[layer].keys():
+                mono_attention_weights_per_layer[layer][head_pos] = sum(mono_attention_weights_per_layer[layer][head_pos])/len(mono_attention_weights_per_layer[layer][head_pos])
+
+            for head_pos in cs_attention_weights_per_layer[layer].keys():
+                cs_attention_weights_per_layer[layer][head_pos] = sum(cs_attention_weights_per_layer[layer][head_pos])/len(cs_attention_weights_per_layer[layer][head_pos])     
+        return mono_attention_weights_per_layer, cs_attention_weights_per_layer            
+
+                    
+
       
     def inference_cloze_task(self, instances, batch_size=16, selected_layers=[], beam_topk=3, ranking_topk=5):
         self.model.eval()
@@ -420,8 +575,7 @@ class EncoderWrapper:
 
                     batch_sz = len(batch)
                     batch_indices = torch.arange(batch_sz).unsqueeze(-1)
-                    ####pdb.set_trace()
-
+                
                     
                     for layer in selected_layers:
                         mono_batch_rank_preds_per_layer[layer] = []
@@ -869,6 +1023,154 @@ class DecoderLensWrapper:
             new_prompt = prompt.replace('[Y]', new_mask)
             new_prompts.append(new_prompt)
         return new_prompts
+    
+    def measure_encoder_representations_cosine_similarity(self, og_sentences, possible_cs_sentences_candidates, selected_layers=[]):
+        self.model.eval()
+        cos_sims_per_layer = dict()
+        encoder_model = self.model.encoder
+        for og_sentence, possible_cs_sentence_candidates in tzip(og_sentences, possible_cs_sentences_candidates):
+            # single input:
+            if isinstance(og_sentence, str):
+                batched_input = [og_sentence]+possible_cs_sentence_candidates
+                model_inputs = self.tokenizer(batched_input, return_tensors='pt', padding=True, truncation=True).to('cuda')
+
+            # double input
+            else:
+                batched_input1 = [og_sentence[0]]
+                batched_input1 += [cand[0] for cand in possible_cs_sentence_candidates]
+                batched_input2 = [og_sentence[1]]
+                batched_input2 += [cand[1] for cand in possible_cs_sentence_candidates]
+                model_inputs = self.tokenizer(batched_input1, batched_input2, return_tensors='pt', padding=True, truncation=True).to('cuda')
+            with torch.no_grad():
+                outputs = encoder_model(**model_inputs, output_hidden_states=True)
+            hidden_states = outputs.hidden_states[1:]
+            for layer in selected_layers:
+                assert layer < len(hidden_states)
+                if layer not in cos_sims_per_layer:
+                    cos_sims_per_layer[layer] = []
+                current_hidden_states = hidden_states[layer].detach().cpu().numpy().mean(axis=1, keepdims=False)
+
+                og_representation = current_hidden_states[0]
+                og_representation = og_representation[np.newaxis,...]
+                cs_representations = current_hidden_states[1:]
+                
+                og_norm = np.linalg.norm(og_representation, axis=1)
+                cs_norm = np.linalg.norm(cs_representations, axis=1)
+
+                sim_matrix = np.dot(og_representation, cs_representations.T)
+                
+                cos_sim = sim_matrix/(np.outer(og_norm, cs_norm) + 1e-9)
+                cos_sim = cos_sim.mean(axis=-1, keepdims=False)
+                cos_sims_per_layer[layer].append(cos_sim)
+        for layer in cos_sims_per_layer.keys():
+            cos_sims_per_layer[layer] = sum(cos_sims_per_layer[layer])/len(cos_sims_per_layer[layer])
+        return cos_sims_per_layer
+
+    def _find_span(self, input_ids_batch, target_word_input_ids_batch, pick_last=False):
+        span_positions_per_batch = []
+        for input_ids, target_word_input_ids in tzip(input_ids_batch, target_word_input_ids_batch):
+            input_ids_lst = [int(token_id) for token_id in input_ids]
+            start_pos = input_ids_lst.index(target_word_input_ids[0])
+            possible_spans = []
+            #left bound = 5
+
+            for left_bound in range(start_pos, len(input_ids)):
+                for right_bound in range(len(input_ids)-1, left_bound-1, -1):
+                    input_ids_subset = input_ids[left_bound:right_bound+1]
+                    if len(input_ids_subset) != len(target_word_input_ids):
+                        continue
+                    match_values = [input_id_token==target_input_id_token for input_id_token, target_input_id_token in zip(input_ids_subset, target_word_input_ids)]
+                    if sum(match_values)==len(match_values):
+                        #pdb.set_trace()
+                        possible_spans.append([i for i in range(left_bound,right_bound+1)])
+            if len(possible_spans) == 0:
+                pdb.set_trace()
+            if pick_last:
+                span_positions_per_batch.append(possible_spans[-1])
+            else:
+                span_positions_per_batch.append(possible_spans[0])
+        return span_positions_per_batch
+
+    def extract_attention_scores_subj_obj(self, instances, batch_size=16, selected_layers=[]):
+        self.model.eval()
+        encoder_model = self.model.encoder
+        batch_cnt = len(instances)//batch_size
+        
+        for i in tqdm(range(0, batch_cnt), desc='batch'):
+
+            batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
+            
+            obj_labels = [instance['obj_label'] for instance in batch]
+            
+            mono_subj_labels = [instance['subj_label_same_lang'] for instance in batch]
+            cs_subj_labels = [instance['subj_label_cross_lang'] for instance in batch]
+
+            mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+            cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+
+            
+            all_mono_subj_tokens, _, mono_subj_token_lengths, _, _ = self._tokenize_obj(mono_subj_labels)
+            for i in range(len(all_mono_subj_tokens)):
+                all_mono_subj_tokens[i] = all_mono_subj_tokens[i][:mono_subj_token_lengths[i]]
+            
+            
+            all_cs_subj_tokens, _, cs_subj_token_lengths, _, _  = self._tokenize_obj(cs_subj_labels)
+            for i in range(len(all_cs_subj_tokens)):
+                all_cs_subj_tokens[i] = all_cs_subj_tokens[i][:cs_subj_token_lengths[i]]
+            
+            all_obj_tokens, _, obj_token_lengths, _, _ = self._tokenize_obj(obj_labels)
+            for i in range(len(all_obj_tokens)):
+                all_obj_tokens[i] = all_obj_tokens[i][:obj_token_lengths[i]]
+            
+
+            mono_inputs = self.tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt')
+            cs_inputs = self.tokenizer(cs_prompts, padding=True, truncation=True, return_tensors='pt')
+            mono_subj_spans = self._find_span(mono_inputs['input_ids'], all_mono_subj_tokens, False)
+            cs_subj_spans = self._find_span(cs_inputs['input_ids'], all_cs_subj_tokens, False)
+            mono_obj_spans = self._find_span(mono_inputs['input_ids'], all_obj_tokens, True)
+            cs_obj_spans = self._find_span(cs_inputs['input_ids'], all_obj_tokens, True)
+
+            mono_inputs = mono_inputs.to('cuda')
+            cs_inputs = mono_inputs.to('cuda')
+            mono_attentions = encoder_model(**mono_inputs, output_attentions=True).attentions
+            cs_attentions = encoder_model(**cs_inputs, output_attentions=True).attentions
+
+            mono_attention_weights_per_layer = dict()
+            cs_attention_weights_per_layer = dict()
+            for layer in selected_layers:
+                if layer not in mono_attention_weights_per_layer:
+                    mono_attention_weights_per_layer[layer] = dict()
+                if layer not in cs_attention_weights_per_layer:
+                    cs_attention_weights_per_layer[layer] = dict()
+                assert layer < len(mono_attentions)
+                mono_attentions_spec_layer = mono_attentions[layer].detach().cpu().numpy()
+                cs_attention_spec_layer = cs_attentions[layer].detach().cpu().numpy()
+                for batch_idx in range(len(batch)):
+                    mono_tokens_attention = mono_attentions_spec_layer[batch_idx]
+                    cs_tokens_attention = cs_attention_spec_layer[batch_idx]
+
+                    mono_span_attention = mono_tokens_attention[:, mono_obj_spans[batch_idx][0]:mono_obj_spans[batch_idx][-1]+1, mono_subj_spans[batch_idx][0]:mono_subj_spans[batch_idx][-1]+1]
+                    cs_span_attention = cs_tokens_attention[:, cs_obj_spans[batch_idx][0]:cs_obj_spans[batch_idx][-1]+1, cs_subj_spans[batch_idx][0]:cs_subj_spans[batch_idx][-1]+1]
+
+                    mono_span_attention_weight_average_per_head = mono_span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False)
+                    cs_span_attention_weight_average_per_head = cs_span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False) #num_heads
+                    for head_pos, attention_weight_avg in enumerate(mono_span_attention_weight_average_per_head):
+                        if head_pos not in mono_attention_weights_per_layer[layer]:
+                            mono_attention_weights_per_layer[layer][head_pos] = []
+                        mono_attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+                    
+                    for head_pos, attention_weight_avg in enumerate(cs_span_attention_weight_average_per_head):
+                        if head_pos not in cs_attention_weights_per_layer[layer]:
+                            cs_attention_weights_per_layer[layer][head_pos] = []
+                        cs_attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+
+        for layer in selected_layers:
+            for head_pos in mono_attention_weights_per_layer[layer].keys():
+                mono_attention_weights_per_layer[layer][head_pos] = sum(mono_attention_weights_per_layer[layer][head_pos])/len(mono_attention_weights_per_layer[layer][head_pos])
+
+            for head_pos in cs_attention_weights_per_layer[layer].keys():
+                cs_attention_weights_per_layer[layer][head_pos] = sum(cs_attention_weights_per_layer[layer][head_pos])/len(cs_attention_weights_per_layer[layer][head_pos])     
+        return mono_attention_weights_per_layer, cs_attention_weights_per_layer            
                 
     def inference_cloze_task(self, instances, batch_size=16, selected_layers=[], beam_topk=5, ranking_topk=5):
         self.model.eval()
@@ -1058,7 +1360,7 @@ class DecoderLensWrapper:
                                 for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
                                     vocab_ids = curr_mono_topk_token_idx.type(torch.LongTensor)
                                     decoded_word =  self.tokenizer.batch_decode(vocab_ids)
-                                    decoded_word = [f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)]
+                                    decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)])
                                     mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()/(span_len+1)
                         
                                 cs_topk_indices_instance = new_cs_indices[batch_idx]
@@ -1066,7 +1368,7 @@ class DecoderLensWrapper:
                                 for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
                                     vocab_ids = curr_cs_topk_token_idx.type(torch.LongTensor)
                                     decoded_word =  self.tokenizer.batch_decode(vocab_ids)
-                                    decoded_word = [f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)]
+                                    decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)])
                                     cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob.item()/(span_len+1)
 
                                 
