@@ -137,9 +137,8 @@ class EncoderWrapper:
                         #pdb.set_trace()
                         possible_spans.append([i for i in range(left_bound,right_bound+1)])
 
-            # some is the subset string
-            if len(possible_spans) == 0:
-                pdb.set_trace()
+            assert len(possible_spans) > 0
+
             if pick_last:
                 span_positions_per_batch.append(possible_spans[-1])
             else:
@@ -1083,8 +1082,7 @@ class DecoderLensWrapper:
                     if sum(match_values)==len(match_values):
                         #pdb.set_trace()
                         possible_spans.append([i for i in range(left_bound,right_bound+1)])
-            if len(possible_spans) == 0:
-                pdb.set_trace()
+            assert len(possible_spans) > 0
             if pick_last:
                 span_positions_per_batch.append(possible_spans[-1])
             else:
