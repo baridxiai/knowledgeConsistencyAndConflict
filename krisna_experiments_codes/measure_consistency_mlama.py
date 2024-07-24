@@ -10,6 +10,12 @@ import pdb
 from datasets import load_dataset
 from tqdm import tqdm
 import pickle
+import re 
+
+def add_punctuations_whitespace(txt):
+    txt = re.sub('([.,!?():;])', r' \1 ', txt)
+    txt = re.sub('\s{2,}', ' ', txt)
+    return txt
 
 def main(args):
 
@@ -33,40 +39,40 @@ def main(args):
         if data['language'] == args.source_lang:
             if m_lama_id not in m_lama_dict_source_lang:
                 m_lama_dict_source_lang[m_lama_id] = dict()
-            m_lama_dict_source_lang[m_lama_id]['template'] = data['template']
-            m_lama_dict_source_lang[m_lama_id]['subj_label_same_lang'] = data['sub_label']
-            m_lama_dict_source_lang[m_lama_id]['obj_label'] = data['obj_label']
+            m_lama_dict_source_lang[m_lama_id]['template'] = add_punctuations_whitespace(data['template'])
+            m_lama_dict_source_lang[m_lama_id]['subj_label_same_lang'] = add_punctuations_whitespace(data['sub_label'])
+            m_lama_dict_source_lang[m_lama_id]['obj_label'] = add_punctuations_whitespace(data['obj_label'])
             
             if m_lama_id not in m_lama_dict_target_lang:
                 m_lama_dict_target_lang[m_lama_id] = dict()
-            m_lama_dict_target_lang[m_lama_id]['subj_label_cross_lang'] = data['sub_label']
+            m_lama_dict_target_lang[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(data['sub_label'])
         
         elif data['language'] == args.target_lang:
             if m_lama_id not in m_lama_dict_target_lang:
                 m_lama_dict_target_lang[m_lama_id] = dict()
-            m_lama_dict_target_lang[m_lama_id]['template'] = data['template']
-            m_lama_dict_target_lang[m_lama_id]['subj_label_same_lang'] = data['sub_label']
-            m_lama_dict_target_lang[m_lama_id]['obj_label'] = data['obj_label']
+            m_lama_dict_target_lang[m_lama_id]['template'] = add_punctuations_whitespace(data['template'])
+            m_lama_dict_target_lang[m_lama_id]['subj_label_same_lang'] = add_punctuations_whitespace(data['sub_label'])
+            m_lama_dict_target_lang[m_lama_id]['obj_label'] = add_punctuations_whitespace(data['obj_label'])
             
             if m_lama_id not in m_lama_dict_source_lang:
                 m_lama_dict_source_lang[m_lama_id] = dict()
-            m_lama_dict_source_lang[m_lama_id]['subj_label_cross_lang'] = data['sub_label']
+            m_lama_dict_source_lang[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(data['sub_label'])
         
     mlama_instances_source_lang = [instance for instance in m_lama_dict_source_lang.values() if 'subj_label_cross_lang' in instance and 'subj_label_same_lang' in instance]  
     mlama_instances_target_lang = [instance for instance in m_lama_dict_target_lang.values() if 'subj_label_cross_lang' in instance and 'subj_label_same_lang' in instance]  
 
     # inference yay!
     source_mono_rank_preds, source_cs_rank_preds, source_gts = wrapped_model.inference_cloze_task(mlama_instances_source_lang, args.batch_size, args.probed_layers, args.beam_topk, args.ranking_topk)
-    target_mono_rank_preds, target_cs_rank_preds,  target_gts = wrapped_model.inference_cloze_task(mlama_instances_target_lang, args.batch_size, args.probed_layers, args.beam_topk, args.ranking_topk)
-    pdb.set_trace(source_mono_rank_preds)
+    #target_mono_rank_preds, target_cs_rank_preds,  target_gts = wrapped_model.inference_cloze_task(mlama_instances_target_lang, args.batch_size, args.probed_layers, args.beam_topk, args.ranking_topk)
+    #pdb.set_trace(source_mono_rank_preds)
     if len(args.probed_layers) == 0 or -1 in args.probed_layers:
         print(f"Matrix Language: {args.source_lang}, Embedded Language: {args.target_lang}")
         print(f"RankC score: {compute_rankc(source_cs_rank_preds, source_mono_rank_preds)}")
-        print(f"Mono MRR score: {compute_mrr(source_mono_rank_preds, source_gts)}, CS MRR: {compute_mrr(compute_mrr(source_cs_rank_preds, source_gts))}\n")
+        print(f"Mono MRR score: {compute_mrr(source_mono_rank_preds, source_gts)}, CS MRR: {compute_mrr(source_cs_rank_preds, source_gts)}\n")
     
-        print(f"Matrix Language: {args.target_lang}, Embedded Language: {args.source_lang}")
-        print(f"RankC score: {compute_rankc(target_cs_rank_preds, target_mono_rank_preds)}")
-        print(f"Mono MRR score: {compute_mrr(target_mono_rank_preds, target_gts)}, CS MRR: {compute_mrr(target_cs_rank_preds, target_gts)}")
+        # print(f"Matrix Language: {args.target_lang}, Embedded Language: {args.source_lang}")
+        # print(f"RankC score: {compute_rankc(target_cs_rank_preds, target_mono_rank_preds)}")
+        # print(f"Mono MRR score: {compute_mrr(target_mono_rank_preds, target_gts)}, CS MRR: {compute_mrr(target_cs_rank_preds, target_gts)}")
     else:
         source_out_dict, target_out_dict = dict(), dict()
         for layer in args.probed_layers:
@@ -81,34 +87,34 @@ def main(args):
                 'cs_rank_preds': source_cs_rank_preds[layer]
             }
 
-            target_rankc_score = compute_rankc(target_cs_rank_preds[layer], target_mono_rank_preds[layer])
-            target_mono_mrr = compute_mrr(target_mono_rank_preds[layer], target_gts)
-            target_cs_mrr = compute_mrr(target_cs_rank_preds[layer], target_gts)
-            target_out_dict[layer] = {
-                'rankC': target_rankc_score,
-                'mono_mrr': target_mono_mrr,
-                'cs_mrr': target_cs_mrr,
-                'mono_rank_preds': target_mono_rank_preds[layer],
-                'cs_rank_preds': target_cs_rank_preds[layer]
-            }
+            # target_rankc_score = compute_rankc(target_cs_rank_preds[layer], target_mono_rank_preds[layer])
+            # target_mono_mrr = compute_mrr(target_mono_rank_preds[layer], target_gts)
+            # target_cs_mrr = compute_mrr(target_cs_rank_preds[layer], target_gts)
+            # target_out_dict[layer] = {
+            #     'rankC': target_rankc_score,
+            #     'mono_mrr': target_mono_mrr,
+            #     'cs_mrr': target_cs_mrr,
+            #     'mono_rank_preds': target_mono_rank_preds[layer],
+            #     'cs_rank_preds': target_cs_rank_preds[layer]
+            # }
 
             print(f"Layer: {layer}")
             print(f"Matrix Language: {args.source_lang}, Embedded Language: {args.target_lang}")
             print(f"RankC score: {source_rankc_score}")
             print(f"Mono MRR score: {source_mono_mrr}, CS MRR score: {source_cs_mrr}\n")
-            print(f"Matrix Language: {args.target_lang}, Embedded Language: {args.source_lang}")
-            print(f"RankC score: {target_rankc_score}")
-            print(f"Mono MRR score: {target_mono_mrr}, CS MRR score: {target_cs_mrr}\n")
+            #print(f"Matrix Language: {args.target_lang}, Embedded Language: {args.source_lang}")
+            #print(f"RankC score: {target_rankc_score}")
+            #print(f"Mono MRR score: {target_mono_mrr}, CS MRR score: {target_cs_mrr}\n")
 
         
         source_filepath = f"{args.output_prefix}_matrix-{args.source_lang}-embedded-{args.target_lang}.pkl"
-        target_filepath = f"{args.output_prefix}_matrix-{args.target_lang}-embedded-{args.source_lang}.pkl"
+        #target_filepath = f"{args.output_prefix}_matrix-{args.target_lang}-embedded-{args.source_lang}.pkl"
         
         with open(source_filepath, 'wb') as f:
             pickle.dump(source_out_dict, f)
 
-        with open(target_filepath, 'wb') as f:
-            pickle.dump(target_out_dict, f)
+        # with open(target_filepath, 'wb') as f:
+        #     pickle.dump(target_out_dict, f)
 
 
 if __name__ == '__main__':
