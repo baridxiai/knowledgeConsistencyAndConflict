@@ -1,3 +1,21 @@
+# coding=utf-8
+# Copyright 2020 Mesh TensorFlow authors, T5 Authors and HuggingFace Inc. team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""PyTorch mT5 model."""
+# this code was adapted from https://github.com/huggingface/transformers/blob/main/src/transformers/models/mt5/modeling_mt5.py, where i modified it by adding mechanism to return the intermediate activation and also enables to modify the activation values
+
+
 from torch import nn
 from transformers.utils import WEIGHTS_NAME, CONFIG_NAME
 from transformers.utils.hub import cached_file
@@ -5,10 +23,8 @@ import json
 import torch
 import logging
 import math
-from typing import List, Optional, Tuple, Union
+from typing import Optional, Tuple
 import torch.nn.functional as F
-import numpy as np
-import pdb
 
 import copy
 
@@ -24,7 +40,6 @@ def swish(x):
 ACT2FN = {"gelu": gelu, "relu": torch.nn.functional.relu, "swish": swish, "gelu_new": gelu}
 
 class MT0Config(object):
-
     def __init__(self,
                 vocab_size_or_config_json_file,
                 d_model=512,
@@ -69,7 +84,6 @@ class MT0Config(object):
                     self.__dict__[key] = value
             if self.num_decoder_layers is None:
                 self.num_decoder_layers = self.num_layers
-            #pdb.set_trace()
 
         elif isinstance(vocab_size_or_config_json_file, int):
             act_info = feed_forward_proj.split("-")
@@ -104,7 +118,6 @@ class MT0Config(object):
             self.classifier_dropout = classifier_dropout
             self.use_cache = use_cache
             self.is_decoder = is_decoder
-            #pdb.set_trace()
         else:
             raise ValueError("First argument must be either a vocabulary size (int)"
                             "or the path to a pretrained model config file (str)")
@@ -179,9 +192,7 @@ class MT0DenseActDense(nn.Module):
         intermediate_states = self.act(hidden_states)
 
         # add neuron intervention
-
         if modified_activation_values is not None and tgt_pos is not None:
-            #pdb.set_trace()
             intermediate_states[:, tgt_pos, :] = modified_activation_values
         hidden_states = self.dropout(intermediate_states)
 
@@ -202,9 +213,7 @@ class MT0DenseGatedActDense(nn.Module):
         hidden_linear = self.wi_1(hidden_states)
         intermediate_states = hidden_gelu * hidden_linear
         # add neuron intervention
-        #pdb.set_trace()
         if modified_activation_values is not None and tgt_pos is not None:
-            #pdb.set_trace()
             intermediate_states[:, tgt_pos, :] = modified_activation_values
         hidden_states = self.dropout(intermediate_states)
 
@@ -751,7 +760,6 @@ class MT0PreTrainedModel(nn.Module):
         # Since we are adding it to the raw scores before the softmax, this is
         # effectively the same as removing these entirely.
 
-        #pdb.set_trace()
         extended_attention_mask = (1.0 - extended_attention_mask) * torch.finfo(torch.float32).min
         return extended_attention_mask
 
@@ -980,7 +988,6 @@ class MT0Stack(MT0PreTrainedModel):
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
         extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
-        #pdb.set_trace()
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
@@ -1052,7 +1059,6 @@ class MT0Stack(MT0PreTrainedModel):
 
             hidden_states, present_key_value_state = layer_outputs[0], layer_outputs[2]
             if tgt_layers is not None and i in tgt_layers:
-                #pdb.set_trace()
                 ffn_states[i] = layer_outputs[1]
 
             # We share the position biases between the layers - the first layer store them
@@ -1407,7 +1413,6 @@ class MT0ForConditionalGeneration(MT0PreTrainedModel):
             encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             encoder_outputs[3] if len(encoder_outputs) > 3 else None
         )
-        #pdb.set_trace()
         hidden_states = encoder_outputs[0]
 
 
@@ -1446,15 +1451,12 @@ class MT0ForConditionalGeneration(MT0PreTrainedModel):
             # Rescale output before projecting on vocab
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
             sequence_output = sequence_output * (self.model_dim**-0.5)
-        #pdb.set_trace()
         last_hidden = sequence_output[:, decoder_tgt_positions, :]
         ffn_states_per_layer = dict()
         for layer in tgt_layers:
-            #pdb.set_trace()
             ffn_states_per_layer[layer] = encoder_outputs[1][layer][:, encoder_tgt_pos, :]
         tgt_logits = self.lm_head(last_hidden)
         tgt_proba = F.softmax(tgt_logits, dim=-1)
-        #pdb.set_trace()
         if modified_activation_values is None:
             return tgt_logits, ffn_states_per_layer
         else:
@@ -1463,16 +1465,9 @@ class MT0ForConditionalGeneration(MT0PreTrainedModel):
             for idx, dec_vocab_pos in enumerate(tgt_labels):
                 if idx == len(tgt_labels)-1:
                     retain_graph = False
-                selected_tgt_proba = tgt_proba[:, idx, dec_vocab_pos] #batch_size*seq_length*1
-                #pdb.set_trace()
+                selected_tgt_proba = tgt_proba[:, idx, dec_vocab_pos] # [batch_size*seq_length*1]
                 grad = torch.autograd.grad(torch.unbind(selected_tgt_proba), modified_activation_values, retain_graph=retain_graph)
                 final_grad = grad[0] if final_grad is None else torch.add(final_grad, grad[0])
-                #pdb.set_trace()
             final_grad = torch.div(final_grad, len(tgt_labels)).detach().cpu().numpy()
             tgt_proba = tgt_proba.mean(axis=-2, keepdims=False).detach().cpu().numpy()
             return tgt_proba, final_grad
-        
-
-
-
-

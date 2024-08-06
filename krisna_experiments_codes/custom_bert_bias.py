@@ -1,11 +1,9 @@
-import os
+# Taken from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/custom_bert_bias.py with several adjustments 
+
 import copy
 import json
 import math
 import logging
-import tarfile
-import tempfile
-import shutil
 
 import torch
 from torch import nn
@@ -13,14 +11,8 @@ import torch.nn.functional as F
 
 from transformers.utils import WEIGHTS_NAME, CONFIG_NAME
 from transformers.utils.hub import cached_file
-from typing import List, Optional, Tuple, Union
-import numpy as np
-import pdb
-
 
 logger = logging.getLogger(__name__)
-
-
 
 def gelu(x):
     return x * 0.5 * (1.0 + torch.erf(x / math.sqrt(2.0)))
@@ -31,7 +23,6 @@ def swish(x):
 
 
 ACT2FN = {"gelu": gelu, "relu": torch.nn.functional.relu, "swish": swish}
-
 
 class BertConfig(object):
 
@@ -113,7 +104,6 @@ class BertLayerNorm(nn.Module):
 
 
 class BertEmbeddings(nn.Module):
-
     def __init__(self, config):
         super(BertEmbeddings, self).__init__()
         self.word_embeddings = nn.Embedding(config.vocab_size, config.hidden_size)

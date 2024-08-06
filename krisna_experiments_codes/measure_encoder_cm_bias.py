@@ -1,14 +1,8 @@
+# Adapted implementation from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/1_analyze_mlm_bias.py\
 from argparse import ArgumentParser
-from model import initialize_model_and_tokenizer, DecoderLensWrapper, EncoderWrapper, initialize_encoder_model_and_tokenizer_per_task
-from sentence_transformers import SentenceTransformer
-from dataset import load_qa_dataset_for_inference, load_nli_dataset_for_inference
-import gc
 import torch
-from eval import evaluate_sim, compute_query_matrix_and_norm, evaluate_f1_max, evaluate_f1_max, evaluate_exact_max, compute_acc_nli, compute_rankc, compute_mrr
 from tqdm import tqdm
-import pdb
 from datasets import load_dataset
-import argparse
 from tqdm import tqdm
 import pickle
 import re 
@@ -16,29 +10,48 @@ from transformers import AutoTokenizer
 import numpy as np
 from custom_mt0_bias import MT0ForConditionalGeneration
 from custom_bert_bias import BertForMaskedLM
+from utils import load_mlama
+from typing import Union, List, Dict
 
-def add_punctuations_whitespace(txt):
-    txt = re.sub('([.,!?():;])', r' \1 ', txt)
-    txt = re.sub('\s{2,}', ' ', txt)
-    return txt
 
-def scaled_input(emb, batch_size, num_batch=1):
+
+def scaled_input(emb: torch.Tensor, batch_size: int, num_batch: int = 1) -> [torch.Tensor, np.array]:
+    """"
+    Create a batch of activations delta
+
+    @param emb: activation tensor from the hidden states in FFN [1*intermediate_dim]
+    @param batch_size: how man instances within one batch of deltas
+    @param num_batch: total number of delta batches
+
+    @return res: batches of activation delta [num_of_points*intermediate_dim]
+    @return grad_step: batches of activation delta [1*intermediate_dim]
+    """
     baseline = torch.zeros_like(emb) # 1*intermed_dim
 
     num_points = batch_size * num_batch
     grad_step = (emb - baseline) / num_points 
 
     res = torch.cat([torch.add(baseline, grad_step * i) for i in range(num_points)], dim=0) # batch
-    #pdb.set_trace()
-    # res = [baseline, baseline+1*(emb-baseline)/num_points,...]
     return res, grad_step.detach().cpu().numpy()
 
 
-def tokenize_obj(tokenizer, obj_label, model_type):
+def tokenize_obj(tokenizer: AutoTokenizer, obj_label: str, model_type: str) -> [Dict[str, List], Dict[str, torch.Tensor, List[int], List[int]]]:
+    """
+    Get the all necessary attributes with the tokenized object
+
+    @param tokenizer: The model's tokenizer
+    @param obj_label: Object entity
+    @param model_typer: encoder-decoder or encoder
+
+    @return obj_tokens: output from tokenizer given obj_label input
+    @return obj_tokens_cuda: same as obj_tokens but in gpu
+    @return obj_token_positions: span indices of the object entity
+    @return labels: all object tokens
+    @return obj_tokens_len: length of the object entity
+    """
     if model_type == 'encoder-decoder':
         obj_tokens = tokenizer(f"<extra_id_0> {obj_label} <extra_id_1>")
         obj_tokens_cuda = tokenizer(f"<extra_id_0> {obj_label} <extra_id_1>", return_tensors='pt').to('cuda') 
-
 
         obj_token_input_ids = obj_tokens['input_ids']
         start_pos = obj_token_input_ids.index(250099)
@@ -47,16 +60,14 @@ def tokenize_obj(tokenizer, obj_label, model_type):
         labels = [obj_token_input_ids[idx] for idx in obj_token_positions] 
         
         return obj_tokens, obj_tokens_cuda, obj_token_positions, labels
+    
     else:
         obj_tokens = tokenizer(obj_label)
         obj_tokens_cuda = tokenizer(obj_label, return_tensors='pt').to('cuda') 
         obj_tokens_len = len(obj_tokens)
         return obj_tokens, obj_tokens_cuda, obj_tokens_len
 
-
 def main(args):
-
-    #initialize
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     torch.cuda.empty_cache()
     if args.model_type == 'encoder-decoder':
@@ -65,62 +76,35 @@ def main(args):
         model = BertForMaskedLM.from_pretrained(args.model_name)
 
     model.to('cuda')
-    
-    m_lama = load_dataset("m_lama")["test"].shuffle(seed=42)
-    m_lama_dict_source_lang = dict()
-    m_lama_dict_target_lang = dict()
+    mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang)
 
-    # gather all data
-    for data in tqdm(m_lama):
-        m_lama_id = f'{data["sub_uri"]}-{data["obj_uri"]}@{data["predicate_id"]}'
-        
-        if data['language'] == args.source_lang:
-            if m_lama_id not in m_lama_dict_source_lang:
-                m_lama_dict_source_lang[m_lama_id] = dict()
-            m_lama_dict_source_lang[m_lama_id]['template'] = add_punctuations_whitespace(data['template'])
-            m_lama_dict_source_lang[m_lama_id]['subj_label_same_lang'] = add_punctuations_whitespace(data['sub_label'])
-            m_lama_dict_source_lang[m_lama_id]['obj_label'] = add_punctuations_whitespace(data['obj_label'])
-            
-            if m_lama_id not in m_lama_dict_target_lang:
-                m_lama_dict_target_lang[m_lama_id] = dict()
-            m_lama_dict_target_lang[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(data['sub_label'])
-        
-        elif data['language'] == args.target_lang:
-            if m_lama_id not in m_lama_dict_target_lang:
-                m_lama_dict_target_lang[m_lama_id] = dict()
-            m_lama_dict_target_lang[m_lama_id]['template'] = add_punctuations_whitespace(data['template'])
-            m_lama_dict_target_lang[m_lama_id]['subj_label_same_lang'] = add_punctuations_whitespace(data['sub_label'])
-            m_lama_dict_target_lang[m_lama_id]['obj_label'] = add_punctuations_whitespace(data['obj_label'])
-            
-            if m_lama_id not in m_lama_dict_source_lang:
-                m_lama_dict_source_lang[m_lama_id] = dict()
-            m_lama_dict_source_lang[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(data['sub_label'])
-        
-    mlama_instances_source_lang = [instance for instance in m_lama_dict_source_lang.values() if 'subj_label_cross_lang' in instance and 'subj_label_same_lang' in instance]
     extra_id_token = 250099
+    
     mono_ig2_avg_per_layer = dict()
     cs_ig2_avg_per_layer = dict()
-    divider = len(mlama_instances_source_lang)
+    
+    divider = len(mlama_instances)
     model.eval()
-    for instance in tqdm(mlama_instances_source_lang):
+
+    for instance in tqdm(mlama_instances):
         if args.model_type == 'encoder-decoder':
-            obj_tokens, obj_tokens_cuda, obj_token_positions, labels = tokenize_obj(tokenizer, instance['obj_label'], args.model_type)
+            _, obj_tokens_cuda, obj_token_positions, labels = tokenize_obj(tokenizer, instance['obj_label'], args.model_type)
             instance_template = instance['template'].replace('[Y]', '<extra_id_0>')
 
+            # Do code-mixing
             instance_mono_template = instance_template.replace('[X]', instance['subj_label_same_lang'])
             instance_cs_template = instance_template.replace('[X]', instance['subj_label_cross_lang'])
 
             tokenized_instance_mono_template = tokenizer(instance_mono_template)
             tokenized_instance_cs_template = tokenizer(instance_cs_template)
-            #pdb.set_trace()
+
+            # find the sentinel token in the encoder
             extra_token_position_mono = tokenized_instance_mono_template['input_ids'].index(extra_id_token)
             extra_token_position_cs = tokenized_instance_cs_template['input_ids'].index(extra_id_token)
 
             tokenized_instance_mono_template = tokenizer(instance_mono_template, return_tensors='pt', padding=False).to('cuda')
             tokenized_instance_cs_template = tokenizer(instance_cs_template, return_tensors='pt', padding=False).to('cuda')
 
-            
-            
             # monolingual ig2
             _, mono_ffn_states_per_layer = model(**tokenized_instance_mono_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=args.probed_layers, encoder_tgt_pos = extra_token_position_mono, decoder_tgt_positions = obj_token_positions, tgt_labels=labels)
             for key, ffn_states in mono_ffn_states_per_layer.items():
@@ -156,13 +140,14 @@ def main(args):
                     cs_ig2_avg_per_layer[key] = ig2_cs.squeeze(0)
                 else:
                     cs_ig2_avg_per_layer[key] = np.add(cs_ig2_avg_per_layer[key] , ig2_cs.squeeze(0))
+        
+        # encoder
         else:
-            obj_tokens, obj_tokens_cuda, obj_tokens_len  = tokenize_obj(tokenizer, instance['obj_label'], args.model_type)
+            _, obj_tokens_cuda, obj_tokens_len  = tokenize_obj(tokenizer, instance['obj_label'], args.model_type)
 
             # replace the object
             obj_tokens_input_ids = obj_tokens_cuda['input_ids'] # for replacement
             instance_template = instance['template'].replace('[Y]', " ".join([tokenizer.mask_token]*obj_tokens_len))
-
 
             instance_mono_template = instance_template.replace('[X]', instance['subj_label_same_lang'])
             instance_cs_template = instance_template.replace('[X]', instance['subj_label_cross_lang'])
@@ -170,11 +155,9 @@ def main(args):
             tokenized_instance_mono_template = tokenizer(instance_mono_template, return_tensors='pt', padding=False).to('cuda')
             tokenized_instance_cs_template = tokenizer(instance_cs_template, return_tensors='pt', padding=False).to('cuda')
 
-            #pdb.set_trace()
             start_tgt_pos_mono = tokenized_instance_mono_template['input_ids'][0].tolist().index(tokenizer.mask_token_id)
             start_tgt_pos_cs = tokenized_instance_cs_template['input_ids'][0].tolist().index(tokenizer.mask_token_id)
 
-            
             
             for layer in args.probed_layers:
                 # monolingual ig2
@@ -187,7 +170,6 @@ def main(args):
                     total_grad = None
                     for batch_idx in range(args.integration_num_batch):
                         batch_weights = scaled_weights[batch_idx * args.integration_batch_size:(batch_idx + 1) * args.integration_batch_size]
-                        #pdb.set_trace()
                         _, grad = model(**mono_inputs_copy, tgt_layer=layer, tgt_pos = curr_mask_pos, tmp_score=batch_weights, tgt_label=obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_mono])  # (batch, n_vocab), (batch, ffn_size)
                         grad = grad.sum(axis=0)  # (ffn_size)
                         total_grad = grad if total_grad is None else np.add(total_grad, grad) # (ffn_size)
@@ -222,14 +204,12 @@ def main(args):
                 else:
                     cs_ig2_avg_per_layer[layer] = np.add(cs_ig2_avg_per_layer[layer] , ig2_cs.squeeze(0))
 
-        
-
     for layer in args.probed_layers:
         mono_ig2_avg_per_layer[layer] = np.divide(mono_ig2_avg_per_layer[layer], divider)           
         cs_ig2_avg_per_layer[layer] = np.divide(cs_ig2_avg_per_layer[layer], divider)  
     
-    mono_output_filepath = f"{args.output_prefix}-{args.source_lang}-ig2.pkl"
-    cs_output_filepath = f"{args.output_prefix}-{args.source_lang}-{args.target_lang}-ig2.pkl"
+    mono_output_filepath = f"{args.output_prefix}-{args.source_lang}-{args.target_lang}-mono-ig2.pkl"
+    cs_output_filepath = f"{args.output_prefix}-{args.source_lang}-{args.target_lang}-cm-ig2.pkl"
 
     with open(mono_output_filepath, 'wb') as f:
         pickle.dump(mono_ig2_avg_per_layer, f)
@@ -239,22 +219,16 @@ def main(args):
         pickle.dump(cs_ig2_avg_per_layer, f)
 
     
-
-
-
-
-
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--integration_num_batch', type=int, default=1)
     parser.add_argument('--integration_batch_size', type=int, default=20)
     parser.add_argument('--probed_layers', type=int, nargs='+', default=[])
     parser.add_argument('--model_name', type=str)
-    parser.add_argument('--source_lang', type=str)
-    parser.add_argument('--target_lang', type=str)
+    parser.add_argument('--matrix_lang', type=str)
+    parser.add_argument('--embedded_lang', type=str)
     parser.add_argument('--output_prefix', type=str, required=False)
     parser.add_argument('--model_type', type=str, choices=['encoder-decoder', 'encoder'])
-
 
     args = parser.parse_args()
 

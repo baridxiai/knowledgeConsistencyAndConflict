@@ -1,11 +1,10 @@
-import evaluate
 from tqdm import tqdm
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering, AutoModelForMaskedLM, AutoModelForSequenceClassification
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering, AutoModelForMaskedLM, AutoModelForSequenceClassification, AutoModel
 from transformers.modeling_outputs import BaseModelOutput
-import pdb
 from tqdm.contrib import tzip
 import numpy as np
+from typing import Dict, List, Tuple, Union
 
 def print_gpu_memory_usage():
     print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
@@ -36,7 +35,6 @@ def initialize_encoder_model_and_tokenizer_per_task(model_name, task_type, is_tf
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
 
-
 def initialize_model_and_tokenizer(model_name):
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
@@ -44,12 +42,32 @@ def initialize_model_and_tokenizer(model_name):
     return model, tokenizer
 
 class EncoderWrapper:
-    def __init__(self, model, tokenizer, task_type):
+    """
+    Wrapper of the Huggingface Encoder model class that contains several functions specific on downstream tasks and
+    and enables to extact predictions from the intermediate layers using LogitLens idea
+
+    @attribute model=a model that we want to wrap
+    @attribute tokenizer=tokenizer
+    @attribute task_type=downstream task
+    """
+
+    def __init__(self, model: AutoModel, tokenizer: AutoTokenizer, task_type: str):
         self.model = model
         self.tokenizer = tokenizer
         self.task_type = task_type
     
-    def _tokenize_obj(self, obj_labels):
+
+    def _tokenize_obj(self, obj_labels: List[str]) -> [list[str], List[int], int]:
+        """
+
+        Tokenize object entity
+
+        @param obj_labels: object entity tokens
+
+        @return all_obj_tokens: tokenized object entity
+        @return obj_token_lengths: the length of the object entity (excluding padding token)
+        @return max_token_len: maximum object entity length (excluding padding token) within one batch
+        """
         all_obj_tokens = []
         obj_token_lengths = []
         for obj_label in obj_labels:
@@ -65,7 +83,16 @@ class EncoderWrapper:
             all_obj_tokens[i] += [self.tokenizer.pad_token_id]*num_pad_tokens
         return all_obj_tokens, obj_token_lengths, max_token_len
     
-    def _mask_sentences(self, prompts, obj_token_lengths):
+
+    def _mask_sentences(self, prompts: List[str], obj_token_lengths: List[int]) -> List[str]:
+        """
+        Replace single mask into tokenizer's n-gram masks
+
+        @param prompts: list of prompts/inputs]
+        
+        @return new_prompts: list of edited prompts/inputs
+        """
+
         new_prompts = []
         for prompt, obj_token_length in zip(prompts, obj_token_lengths):
             new_mask = " ".join(["<mask>"]*obj_token_length)
@@ -73,24 +100,58 @@ class EncoderWrapper:
             new_prompt = new_prompt.replace('<mask>', self.tokenizer.mask_token)
             new_prompts.append(new_prompt)
         return new_prompts
+
+
+    def _calculate_cosine_sim(a: np.array, b: np.array) -> float:
+        """
+        Calculate cosine sim between two vectors
+
+        @param a: vector 1
+        @param b: vector 2
+
+        @return cos_sim: cosine similarity between a and b
+        """
+
+        a_norm = np.linalg.norm(a, axis=1)
+        b_norm = np.linalg.norm(b, axis=1)
+        sim_matrix = np.dot(a, b.T)
+        cos_sim = sim_matrix/(np.outer(a_norm, b_norm) + 1e-9)
+        cos_sim = cos_sim.mean(axis=-1, keepdims=False)
+        cos_sim = cos_sim[0]
+        return cos_sim
+
     
-    def measure_encoder_representations_cosine_similarity(self, og_sentences, possible_cs_sentences_candidates, selected_layers=[]):
+    def measure_encoder_representations_cosine_similarity(self, og_sentences: Union[List[str], List[Tuple[str, str]]]
+                                                        , possible_cs_sentences_candidates: Union[List[List[str]], List[List[Tuple[str, str]]]]
+                                                        , selected_layers: List[int] = []) -> Dict[int, int]:
+        """
+        Measure the average cosine similarity between monolingual input representation 
+        and possible code-mixed input representations on each encoder layer.
+
+        @param og_sentences: monolingual sentence
+        @param possible_cs_sentences: code-mixed parallel translations of one monolingual sentence
+        @param selected_layers: encoder layers that we want to analyze
+
+        @return cos_sim_per_layer: average cosine similarity on every chosen layer
+        """
+
         self.model.eval()
         cos_sims_per_layer = dict()
         for og_sentence, possible_cs_sentence_candidates in tzip(og_sentences, possible_cs_sentences_candidates):
-            # single input:
+            # single input like question answering:
             if isinstance(og_sentence, str):
                 batched_input = [og_sentence]+possible_cs_sentence_candidates
                 #
                 model_inputs = self.tokenizer(batched_input, return_tensors='pt', padding=True, truncation=True).to('cuda')
        
-            # double input
+            # double input like nli task where where we pass premise and hypothesis altogether
             else:
                 batched_input1 = [og_sentence[0]]
                 batched_input1 += [cand[0] for cand in possible_cs_sentence_candidates]
                 batched_input2 = [og_sentence[1]]
                 batched_input2 += [cand[1] for cand in possible_cs_sentence_candidates]
                 model_inputs = self.tokenizer(batched_input1, batched_input2, return_tensors='pt', padding=True, truncation=True).to('cuda')
+            
             with torch.no_grad():
                 outputs = self.model(**model_inputs, output_hidden_states=True)
             hidden_states = outputs.hidden_states[1:]
@@ -105,24 +166,27 @@ class EncoderWrapper:
                 og_representation = og_representation[np.newaxis,...]
                 cs_representations = current_hidden_states[1:]
                 
-                #
-                og_norm = np.linalg.norm(og_representation, axis=1)
-                cs_norm = np.linalg.norm(cs_representations, axis=1)
+                cos_sim = self._calculate_cosine_sim(og_representation, cs_representations)
+                cos_sims_per_layer[layer].append(cos_sim)
 
-                sim_matrix = np.dot(og_representation, cs_representations.T)
-                
-                cos_sim = sim_matrix/(np.outer(og_norm, cs_norm) + 1e-9)
-                cos_sim = cos_sim.mean(axis=-1, keepdims=False)
-                cos_sims_per_layer[layer].append(cos_sim[0])
         for layer in cos_sims_per_layer.keys():
             cos_sims_per_layer[layer] = sum(cos_sims_per_layer[layer])/len(cos_sims_per_layer[layer])
         
         return cos_sims_per_layer
 
-    def _find_span(self, input_ids_batch, target_word_input_ids_batch, pick_last=False):
+
+    def _find_span(self, input_ids_batch: List[List[int]], target_word_input_ids_batch: List[List[int]], pick_last: bool = False) -> List[List[int]]:
+        """"
+        Find span range of specified object entities
+
+        @param input_ids_batch: List of token ids in the input [batch, seq_length]
+        @param target_word_input_ids_batch: List of token ids in the specified object eneities [batch, 1-max_obj_entity_length]
+        @param pick_last: whether to pick last possible span or not
+
+        @return span_positions_per_batch: Span positions in the input token ids of specified object entities [batch, 1-max_obj_entity_length]     
+        """
         span_positions_per_batch = []
         for input_ids, target_word_input_ids in tzip(input_ids_batch, target_word_input_ids_batch):
-            #
             input_ids_lst = [int(token_id) for token_id in input_ids]
             start_pos = input_ids_lst.index(target_word_input_ids[0])
             possible_spans = []
@@ -133,7 +197,6 @@ class EncoderWrapper:
                         continue
                     match_values = [input_id_token==target_input_id_token for input_id_token, target_input_id_token in zip(input_ids_subset, target_word_input_ids)]
                     if sum(match_values)==len(match_values):
-                        #
                         possible_spans.append([i for i in range(left_bound,right_bound+1)])
 
             assert len(possible_spans) > 0
@@ -143,12 +206,47 @@ class EncoderWrapper:
             else:
                 span_positions_per_batch.append(possible_spans[0])
         return span_positions_per_batch
+ 
+    def _calculate_subj_obj_attention_per_instance(self, tokens_attention: np.array, attention_weights_per_layer: Dict[int, Dict[int, List[float]]]
+                                                   , layer: int, start_obj_idx: int, end_obj_idx: int, start_subj_idx: int, end_subj_idx: int):
+        """
+        Calculates the average of sum of attention weights on all subject tokens attending particular object token across all object tokens
 
-    def extract_attention_scores_subj_obj(self, instances, batch_size=16, selected_layers=[]):
+        @param tokens_attention: all attention weights on every head of particular encoder layer for one input
+            [head, seq_length, seq_length]
+        @param attention_weights_per_layer: average subject-object attention weigthts on every head of one encoder layer for all inputs
+        @param layer: layer position
+        @param start_obj_idx: the position of the first object token
+        @param end_obj_idx: the position of the last object token
+        @param start_subj_idx: the position of the first subject token
+        @param end_subj_idx: the position of the last subject token
+        """
+        
+        span_attention = tokens_attention[:, start_obj_idx:end_obj_idx+1, start_subj_idx:end_subj_idx+1] # extract subject tokens attention of each object token z
+        span_attention_weight_average_per_head = span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False) # sum over the subject tokens get the average over all object tokens
+        for head_pos, attention_weight_avg in enumerate(span_attention_weight_average_per_head):
+            if head_pos not in attention_weights_per_layer[layer]:
+                attention_weights_per_layer[layer][head_pos] = []
+            attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+
+    def extract_attention_scores_subj_obj(self, instances: List[Dict], batch_size: int =16, selected_layers: List[int] =[]) -> Dict[int, Dict[int, float]]:
+        """
+        Calculates the average of sum of attention weights on all subject tokens attending particular object token across all object tokens for one input
+
+        @param instances: all input instances containing dictionary
+        @param batch_size: number of instances in one batch
+        @param selected_layers: encoder layer indices that we want to analyze
+
+        @return mono_attention_weights_per_layer: average subject-object attention weights for each head and layer 
+            given all monolingual inputs
+        @return cs_attention_weights_per_layer: average subject-object attention weights for each head and layer 
+            given all codemixed inputs
+        """
+
         self.model.eval()
         batch_cnt = len(instances)//batch_size
         
-        for i in tqdm(range(0, batch_cnt), desc='batch'):
+        for i in tqdm(range(0, batch_cnt)):
 
             batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
             
@@ -157,6 +255,7 @@ class EncoderWrapper:
             mono_subj_labels = [instance['subj_label_same_lang'] for instance in batch]
             cs_subj_labels = [instance['subj_label_cross_lang'] for instance in batch]
 
+            # create parallel code-switching statements
             mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
             cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
 
@@ -164,7 +263,6 @@ class EncoderWrapper:
             all_mono_subj_tokens, mono_subj_token_lengths, _ = self._tokenize_obj(mono_subj_labels)
             for i in range(len(all_mono_subj_tokens)):
                 all_mono_subj_tokens[i] = all_mono_subj_tokens[i][:mono_subj_token_lengths[i]]
-            
             
             all_cs_subj_tokens, cs_subj_token_lengths, _ = self._tokenize_obj(cs_subj_labels)
             for i in range(len(all_cs_subj_tokens)):
@@ -177,13 +275,18 @@ class EncoderWrapper:
 
             mono_inputs = self.tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt')
             cs_inputs = self.tokenizer(cs_prompts, padding=True, truncation=True, return_tensors='pt')
+
+            # find subject entity span positions
             mono_subj_spans = self._find_span(mono_inputs['input_ids'], all_mono_subj_tokens, False)
             cs_subj_spans = self._find_span(cs_inputs['input_ids'], all_cs_subj_tokens, False)
+
+            # find object entity span positions 
             mono_obj_spans = self._find_span(mono_inputs['input_ids'], all_obj_tokens, True)
             cs_obj_spans = self._find_span(cs_inputs['input_ids'], all_obj_tokens, True)
 
             mono_inputs = mono_inputs.to('cuda')
             cs_inputs = mono_inputs.to('cuda')
+
             mono_attentions = self.model(**mono_inputs, output_attentions=True).attentions
             cs_attentions = self.model(**cs_inputs, output_attentions=True).attentions
 
@@ -197,25 +300,26 @@ class EncoderWrapper:
                 assert layer < len(mono_attentions)
                 mono_attentions_spec_layer = mono_attentions[layer].detach().cpu().numpy()
                 cs_attention_spec_layer = cs_attentions[layer].detach().cpu().numpy()
-                for batch_idx in range(len(batch)):
+                for batch_idx in range(len(batch)):  
+                    # calculate subject-object attention for monolingual input
                     mono_tokens_attention = mono_attentions_spec_layer[batch_idx]
-                    cs_tokens_attention = cs_attention_spec_layer[batch_idx]
-                    #
-                    mono_span_attention = mono_tokens_attention[:, mono_obj_spans[batch_idx][0]:mono_obj_spans[batch_idx][-1]+1, mono_subj_spans[batch_idx][0]:mono_subj_spans[batch_idx][-1]+1]
-                    cs_span_attention = cs_tokens_attention[:, cs_obj_spans[batch_idx][0]:cs_obj_spans[batch_idx][-1]+1, cs_subj_spans[batch_idx][0]:cs_subj_spans[batch_idx][-1]+1]
-
-                    mono_span_attention_weight_average_per_head = mono_span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False)
-                    cs_span_attention_weight_average_per_head = cs_span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False) #num_heads
-                    for head_pos, attention_weight_avg in enumerate(mono_span_attention_weight_average_per_head):
-                        if head_pos not in mono_attention_weights_per_layer[layer]:
-                            mono_attention_weights_per_layer[layer][head_pos] = []
-                        mono_attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+                    mono_start_obj_idx = mono_obj_spans[batch_idx][0]
+                    mono_end_obj_idx = mono_obj_spans[batch_idx][-1]
+                    mono_start_subj_idx = mono_subj_spans[batch_idx][0] 
+                    mono_end_subj_idx = mono_subj_spans[batch_idx][-1]
+                    self._calculate_subj_obj_attention_per_instance(mono_tokens_attention, mono_attention_weights_per_layer, layer
+                                                                    , mono_start_obj_idx, mono_end_obj_idx, mono_start_subj_idx, mono_end_subj_idx)
                     
-                    for head_pos, attention_weight_avg in enumerate(cs_span_attention_weight_average_per_head):
-                        if head_pos not in cs_attention_weights_per_layer[layer]:
-                            cs_attention_weights_per_layer[layer][head_pos] = []
-                        cs_attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+                    # calculate subject-object attention for codemixed input
+                    cs_tokens_attention = cs_attention_spec_layer[batch_idx]
+                    cs_start_obj_idx = cs_obj_spans[batch_idx][0]
+                    cs_end_obj_idx = cs_obj_spans[batch_idx][-1]
+                    cs_start_subj_idx = cs_subj_spans[batch_idx][0] 
+                    cs_end_subj_idx = cs_subj_spans[batch_idx][-1]
+                    self._calculate_subj_obj_attention_per_instance(cs_tokens_attention, cs_attention_weights_per_layer, layer
+                                                                    , cs_start_obj_idx, cs_end_obj_idx, cs_start_subj_idx, cs_end_subj_idx)
 
+        # accumulate all attentions for every layer
         for layer in selected_layers:
             for head_pos in mono_attention_weights_per_layer[layer].keys():
                 mono_attention_weights_per_layer[layer][head_pos] = sum(mono_attention_weights_per_layer[layer][head_pos])/len(mono_attention_weights_per_layer[layer][head_pos])
@@ -224,10 +328,305 @@ class EncoderWrapper:
                 cs_attention_weights_per_layer[layer][head_pos] = sum(cs_attention_weights_per_layer[layer][head_pos])/len(cs_attention_weights_per_layer[layer][head_pos])     
         return mono_attention_weights_per_layer, cs_attention_weights_per_layer            
 
-                    
+    def _get_mask_token_positions(self, inputs: Dict[str, torch.Tensor]):
+        """
+        Get all positions of the first masked tokens for all inputs in batch
+        
+        @param input: inputs obtained from tokenizer (input_ids, attention_masks, etc)
+        
+        @return masked_rows: batch indidces [batch_size]
+        @return masked_cols: position of first mask token [batch_size]
+        """
+        
+        masked_indices = torch.nonzero(inputs['input_ids'] == self.tokenizer.mask_token_id, as_tuple=False)
+        masked_index = dict()
+        masked_rows, masked_cols = [], []
+        for pos in masked_indices:
+            row_pos = pos[0].item()
+            col_pos = pos[1].item()
+            if row_pos not in masked_index:
+                masked_index[row_pos] = []
+            masked_index[row_pos].append(col_pos)
+        
+        for key in sorted(masked_index.keys()):
+            masked_rows.append(key) 
+            masked_cols.append(min(masked_index[key]))
+        return masked_rows, masked_cols
 
-      
-    def inference_cloze_task(self, instances, batch_size=16, selected_layers=[], beam_topk=3, ranking_topk=5):
+    def _calculate_joint_proba(self, inputs: Dict[str, torch.Tensor], span_pos_rows: List[List[int]], span_pos_cols: List[List[int]]
+                               , ngram_candidate: torch.Tensor, batch_indices: torch.Tensor, current_pos: torch.Tensor, prev_proba: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate joint proba of current topk-frontier with all words in the vocabulary
+
+        @param inputs: input batch from tokenizer
+        @param span_pos_rows: batch indices that we want to predict the next token [(1...batch_size), 1]
+        @param span_pos_cols: position of previous mask tokens that have been predicted [(1...batch_size), span_length]
+        @param ngram_candidate: ngram of k-th candiate [batch_size, span_length-1]
+        @param batch_indices: all indices within one batch [batch_size, 1] 
+        @param current_pos: mask token position for prediction for one batch [batch_size, 1]
+        @param prev_proba: probabilites of ngram_candiate [batch_size, 1]
+
+        @return joint_proba: joint probabilites between top-k and tokens in vocabulary [batch_size, 1, 1]
+        """
+
+        # add previously-predicted n-gram candidates for some inputs
+        inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in inputs.items()}
+        inputs_copy['input_ids'][span_pos_rows, span_pos_cols] = ngram_candidate.to('cuda')
+
+        # log proba
+        cand_proba = self.model(**inputs_copy).logits.softmax(dim=-1) # batch*seq_length*vocab
+        cand_proba = torch.log(cand_proba)
+
+        # get log proba of mask token that we want to predict
+        cand_proba = cand_proba[batch_indices, current_pos, :].squeeze(1) # [batch*vocab]
+    
+        # calculate joint log probabilites
+        joint_proba = prev_proba + cand_proba
+        joint_proba = joint_proba.unsqueeze(1)  
+        return joint_proba
+    
+    def _get_next_topk_proba_and_words(self, joint_proba: torch.Tensor, beam_topk: int):
+        """
+        Determine the proba and token of next top-k candidates based on the joint probability
+
+        @param joint_proba: joint probability [batch*k*vocab]
+        @param beam_topk: number of frontiers to select
+        
+        @return next_topk_log_prob: the joint probabilities of the next top-k candidates # [batch*k]
+        @return vocab_indices: the chosen token of the next top-k candidates # [batch*k] 
+        @return prefix_indices: the chosen n-gram prefix of the next top-k candidates # [batch*k] 
+        """
+
+        vocab_size = joint_proba.shape[-1]
+        joint_proba = joint_proba.view(joint_proba.shape[0], -1) # [batch*(k*vocab)
+        next_topk_log_prob, next_topk_indices = joint_proba.topk(beam_topk, sorted=True) # [batch*k], [batch*k]
+        prefix_indices, vocab_indices = next_topk_indices//vocab_size, next_topk_indices%vocab_size # indices of the prefix candidates, indices of the vocab
+        prefix_indices = prefix_indices.cpu()
+        return next_topk_log_prob, vocab_indices, prefix_indices
+
+    def _update_topk_ngrams(self, new_indices: np.array, prefix_ngrams: np.array, next_token: np.array, batch_idx: int):
+        """
+        Update the topk frontier
+
+        @param new_indices: topk tokens that we want to update [batch*k*span_length]
+        @param prefix_ngrams: chosen prefix for topk [k*span_length-1]
+        @param next_token: next token for top-k [k*1]
+        @param batch_idx: position of instance within batch
+        """
+        # for each instance, update the top-k frontier n-grams
+        new_indices[batch_idx, :, :-1] = prefix_ngrams
+        new_indices[batch_idx, :, -1] = next_token
+
+    def _add_topk_indices_log_prob_to_batch(self, batch_rank_preds: List[Dict[str, float]]
+                                            , new_indices: np.array, next_topk_log_prob: np.array, batch_idx: int, span_length: int):
+        """
+        Add current top-k log probabilites and ngram into the list of predictions for current batch
+
+        @param batch_rank_preds: all top-k ngrams along with their probabilites
+        @param new_indices: ngram of topk [batch_size, k, span_length]
+        @param next_topk_log_prob: probabilites of each topk [batch_size, k, 1]
+        @param span_length: span length for current iteration
+        """
+        topk_indices_instance = new_indices[batch_idx]
+        topk_log_prob_instance = next_topk_log_prob[batch_idx]
+        for curr_topk_log_prob, curr_topk_token_idx in zip(topk_log_prob_instance, topk_indices_instance):
+            vocab_ids = curr_topk_token_idx.type(torch.LongTensor)
+            decoded_word = self.tokenizer.batch_decode(vocab_ids)
+            decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)]) # add id besides the token to distinghuish token
+            batch_rank_preds[batch_idx][decoded_word] = curr_topk_log_prob.item()/(span_length+1) # normalize with length
+
+    def _get_mask_positions(self, inputs):
+        """
+        Provides masked token indices for the beam search process
+
+        @param inputs: batch input obtained from tokenizer
+        ]
+        """
+        masked_rows, masked_cols = self._get_mask_token_positions(inputs)
+            
+        # all these have batch_size*1
+        start_pos = np.array(masked_cols.copy())[..., np.newaxis]
+        masked_rows = np.array(masked_rows)[..., np.newaxis] 
+        
+        return masked_rows, masked_cols, start_pos
+    
+    def _do_beam_search(self, mono_masked_rows: List[List[int]], mono_masked_cols: List[List[int]]
+                        ,cs_masked_rows: List[List[int]], cs_masked_cols: List[List[int]]
+                        , mono_log_probs: torch.Tensor, cs_log_probs: torch.Tensor
+                        , mono_inputs: Dict[str, torch.Tensor], cs_inputs: Dict[str, torch.Tensor]
+                        , beam_topk: int, ranking_topk: int
+                       , max_obj_token_len: int, obj_token_lengths: List[int]
+                       , mono_rank_preds: List[Dict[str, float]], cs_rank_preds: List[Dict[str, float]]):
+        """
+        Do beam search inference on two inputs (monolingual and  codemixed)
+
+        @param mono_masked_rows: batch indices
+        @param mono_masked_cols: position of first mask token in each batch of monolingual inputs
+        @param cs_masked_rows: batch indices
+        @param cs_masked_cols: position of first mask token in each batch of codemixed inputs
+        @param mono_log_probs: first mask token probabilites over all words on monolingual input    [batch_size*seq_length*vocab_size]
+        @param cs_log_probs: first mask token probabilites over all words on codemixed input    [batch_size*seq_length*vocab_size] 
+        @param mono_inputs: input to be fed into model from tokenized monolingual input
+        @param cs_inputs: input to be fed into model from tokenized codemixed input 
+        @param beam_topk: beam width used for beam searcj
+        @param ranking_topk: number of predictions for the final prediction
+        @param max_obj_token_len: maximum object entity length within one batch
+        @param obj_token_lengths: length of every object entity
+        @param mono_rank_preds: all predictions for monolingual input [total_instances, dict[word, proba]]
+        @param cs_rank_preds: all predictions for codemixed input [total_instances, dict[word, proba]]
+        """
+                
+        mono_topk_log_prob, mono_topk_indices = mono_log_probs.topk(beam_topk, sorted=True) # [batch*seq_length*beam_topk], [batch*seq_length*beam_topk]
+        cs_topk_log_prob, cs_topk_indices = cs_log_probs.topk(beam_topk, sorted=True) # [batch*seq_length*beam_topk], [batch*seq_length*beam_topk]
+        
+        mono_start_pos = np.array(mono_masked_cols.copy())[..., np.newaxis] # batch_size*1
+        cs_start_pos = np.array(cs_masked_cols.copy())[..., np.newaxis] # batch_size*1
+
+        mono_current_pos = np.array(mono_masked_cols.copy())[..., np.newaxis] # batch_size*1
+        cs_current_pos = np.array(cs_masked_cols.copy())[..., np.newaxis] # batch_size*1
+        
+        mono_masked_rows = np.array(mono_masked_rows)[..., np.newaxis] # batch_size*1 
+        mono_masked_cols = np.array(mono_masked_cols)[..., np.newaxis] # batch_size*1
+        cs_masked_rows = np.array(cs_masked_rows)[..., np.newaxis] # batch_size*1
+        cs_masked_cols = np.array(cs_masked_cols)[..., np.newaxis] # batch_size*1
+
+        # extract the topk values (probabilities and positions) of top-k of the prediction for first mask token 
+        mono_topk_log_prob, mono_topk_indices = mono_topk_log_prob[mono_masked_rows, mono_masked_cols, :], mono_topk_indices[mono_masked_rows, mono_masked_cols, :] # [batch*1*k], [batch*1*k] 
+        cs_topk_log_prob, cs_topk_indices = cs_topk_log_prob[cs_masked_rows, cs_masked_cols, :], cs_topk_indices[cs_masked_rows, cs_masked_cols, :] # [batch*1*k], [batch*1*k]
+        
+        batch_sz = mono_current_pos.shape[0]
+
+        mono_batch_rank_preds = []
+        cs_batch_rank_preds = []
+        for batch_idx in range(batch_sz):
+            mono_dict = dict()
+            cs_dict = dict()
+            mono_batch_rank_preds.append(mono_dict)
+            cs_batch_rank_preds.append(cs_dict)
+        
+        for batch_idx in range(batch_sz):
+            # get the topk probas and their mapped tokens
+            mono_topk_log_prob_instance, mono_topk_indices_instance = mono_topk_log_prob[batch_idx][0], mono_topk_indices[batch_idx][0] # [k], [k] 
+            cs_topk_log_prob_instance, cs_topk_indices_instance = cs_topk_log_prob[batch_idx][0], cs_topk_indices[batch_idx][0] # [k], [k]
+
+            for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
+                decoded_word = self.tokenizer.decode(curr_mono_topk_token_idx)
+                decoded_word = f"{decoded_word}<{curr_mono_topk_token_idx}>" # we add the token id here to distinguish the difference because one token can be mapped into multiple token ids
+                mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()
+            
+            for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
+                decoded_word = self.tokenizer.decode(curr_cs_topk_token_idx)
+                decoded_word = f"{decoded_word}<{curr_cs_topk_token_idx}>" # we add the token id here to distinguish the difference because one token can be mapped into multiple token ids
+                cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob.item()
+
+        batch_indices = torch.arange(batch_sz).unsqueeze(-1) # [batch_size, 1]
+
+        mono_topk_log_prob = mono_topk_log_prob.permute((2,0,1)) # [k*batch_size*seq_length]
+        mono_topk_indices = mono_topk_indices.permute((2,0,1)).type(torch.LongTensor) # [k*batch_size*seq_length]
+        
+        cs_topk_log_prob = cs_topk_log_prob.permute((2,0,1)) # [k*batch_size*seq_length]
+        cs_topk_indices = cs_topk_indices.permute((2,0,1)).type(torch.LongTensor) # [k*batch_size*seq_length]
+        
+        for span_len in range(1, max_obj_token_len):
+            mono_span_pos_rows = [] # [(1...batch_size)*1]
+            mono_span_pos_cols = [] # [(1...batch_size)*(1...span_length)]
+
+            cs_span_pos_rows = [] # [(1...batch_size)*1]
+            cs_span_pos_cols = [] # [(1...batch_size)*(1...span_length)]
+
+            selected_mono_topk_indices = []
+            selected_cs_topk_indices = []
+
+            # set span indices
+            for batch_idx in range(batch_sz):
+
+                # this means that all masked tokens havent been predicted yet for one instance
+                if obj_token_lengths[batch_idx] >= (span_len+1):
+                    mono_current_pos[batch_idx][0] += 1 # shift target position to the right
+                    mono_span_pos_rows.append([batch_idx])
+        
+                    mono_span_pos_cols.append(np.arange(mono_start_pos[batch_idx][0], mono_current_pos[batch_idx][0])) # [(1...batch_size)*(span-1)]
+                    selected_mono_topk_indices.append(mono_topk_indices.permute((1,0,2))[batch_idx].unsqueeze(0)) # [(1...batch_size)*k*seq_length]
+            
+                    cs_current_pos[batch_idx][0] += 1 # shift target position to the right
+                    cs_span_pos_rows.append([batch_idx])
+                    cs_span_pos_cols.append(np.arange(cs_start_pos[batch_idx][0], cs_current_pos[batch_idx][0])) # [(1...batch_size)*(span-1)]
+                    selected_cs_topk_indices.append(cs_topk_indices.permute((1,0,2))[batch_idx].unsqueeze(0)) # [(1...batch_size)*k*seq_length]
+            
+            selected_cs_topk_indices = torch.cat(selected_cs_topk_indices, axis=0).permute((1,0,2)) # [k*(1...batch_size)*seq_length]
+            selected_mono_topk_indices = torch.cat(selected_mono_topk_indices, axis=0).permute((1,0,2)) # [k*(1...batch_size)*seq_length]
+            
+            all_mono_joint_proba = []
+            all_cs_joint_proba = []
+
+            num_of_cands = len(mono_topk_log_prob)
+
+            for cand_rank in range(num_of_cands):
+                mono_joint_proba = self._calculate_joint_proba(mono_inputs, mono_span_pos_rows
+                                                                , mono_span_pos_cols, selected_mono_topk_indices[cand_rank]
+                                                                , batch_indices, mono_current_pos, mono_topk_log_prob[cand_rank])
+                cs_joint_proba = self._calculate_joint_proba(cs_inputs, cs_span_pos_rows
+                                                                , cs_span_pos_cols, selected_cs_topk_indices[cand_rank]
+                                                                , batch_indices, cs_current_pos, cs_topk_log_prob[cand_rank])
+                
+                all_mono_joint_proba.append(mono_joint_proba)
+                all_cs_joint_proba.append(cs_joint_proba)
+
+            all_mono_joint_proba = torch.cat(all_mono_joint_proba, dim=1) # [batch*k*vocab]
+            all_cs_joint_proba = torch.cat(all_cs_joint_proba, dim=1) # [batch*k*vocab]
+            
+            next_mono_topk_log_prob, vocab_indices_mono, prefix_indices_mono = self._get_next_topk_proba_and_words(all_mono_joint_proba, beam_topk)
+            next_cs_topk_log_prob, vocab_indices_cs, prefix_indices_cs = self._get_next_topk_proba_and_words(all_cs_joint_proba, beam_topk)
+
+            new_mono_indices = torch.zeros((batch_sz, len(mono_topk_log_prob), span_len+1)) # batch*k*len
+            new_cs_indices = torch.zeros((batch_sz, len(cs_topk_log_prob), span_len+1)) # batch*k*len
+
+            mono_topk_indices = mono_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
+            cs_topk_indices = cs_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
+
+            for batch_idx in range(batch_sz):
+                self._update_topk_ngrams(new_mono_indices, mono_topk_indices[batch_idx][prefix_indices_mono[batch_idx]], vocab_indices_mono[batch_idx], batch_idx)
+                self._update_topk_ngrams(new_cs_indices, cs_topk_indices[batch_idx][prefix_indices_cs[batch_idx]], vocab_indices_cs[batch_idx], batch_idx)
+                
+                # check if this batch still requires to predict mask token
+                if obj_token_lengths[batch_idx] >= (span_len+1):
+                    self._add_topk_indices_log_prob_to_batch(mono_batch_rank_preds, new_mono_indices, next_mono_topk_log_prob, batch_idx, span_len)
+                    self._add_topk_indices_log_prob_to_batch(cs_batch_rank_preds, new_cs_indices, next_cs_topk_log_prob, batch_idx, span_len)
+            
+            cs_topk_indices = new_cs_indices.permute((1,0,2)).type(torch.LongTensor) # [k*batch*len]
+            mono_topk_indices = new_mono_indices.permute((1,0,2)).type(torch.LongTensor) # [k*batch*len]
+
+            mono_topk_log_prob = next_mono_topk_log_prob.permute((1,0)).unsqueeze(-1) # [k*batch*1]
+            cs_topk_log_prob = next_cs_topk_log_prob.permute((1,0)).unsqueeze(-1) # [k*batch*1]
+                            
+        # rank all preds
+        for batch_preds in mono_batch_rank_preds:
+            sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
+            selected_words = sorted_batch_preds[:ranking_topk]
+            mono_rank_preds.append(selected_words)
+
+        for batch_preds in cs_batch_rank_preds:
+            sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
+            selected_words = sorted_batch_preds[:ranking_topk]
+            cs_rank_preds.append(selected_words)
+
+    def inference_cloze_task(self, instances: List[Dict], batch_size: int = 16, selected_layers: List[int] = [], beam_topk: int = 5, ranking_topk: int = 5) -> [Union[List[Dict[str, float]], Dict[int, List[Dict[str, float]]]], Union[List[Dict[str, float]], Dict[int, List[Dict[str, float]]]], List[str]]:
+        """
+        Do inference for fill-in-the-blank task using beam search.
+
+        @param instances: all input instances containing dictionary
+        @param batch_size: num of instances in one batch
+        @param selected_layers: encoder layer indices that we want to analyze
+        @param beam_topk: width used for beam search
+        @param ranking_topk: number of selected candidates
+
+        @return mono_rank_preds: list of top-k predictions on all monolingual inputs just from last layer 
+        @return cs_rank_preds: list of top-k predictions on all codemixed inputs just from last layer
+        @return mono_rank_preds_per_layer: list of top-k predictions on all monolingual inputs from selected layers
+        @return cs_rank_preds_per_layer: list of top-k predictions on all codemixed inputs just from selected layers
+        @return labels: list of ground truth labels
+        """
+
         self.model.eval()
 
         mono_rank_preds_per_layer, cs_rank_preds_per_layer = dict(), dict()
@@ -241,286 +640,41 @@ class EncoderWrapper:
             cs_rank_preds_per_layer[layer] = []
 
         with torch.no_grad():
-            for i in tqdm(range(0, batch_cnt), desc='batch'):
+            for i in tqdm(range(0, batch_cnt)):
                 batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
                 obj_labels = [instance['obj_label'] for instance in batch]
+                
                 labels.extend(obj_labels)
+
+                # Do codemixing
                 mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']) for instance in batch]
                 cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']) for instance in batch]
-                all_obj_tokens, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
+                
+                # Get tokenized object entities
+                _, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
+                
+                # Do n-gram masking
                 mono_prompts = self._mask_sentences(mono_prompts, obj_token_lengths)
                 cs_prompts = self._mask_sentences(cs_prompts, obj_token_lengths)
 
                 mono_inputs = self.tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt').to('cuda')
                 cs_inputs = self.tokenizer(cs_prompts, padding=True, truncation=True, return_tensors='pt').to('cuda')
 
+                mono_masked_rows, mono_masked_cols = self._get_mask_token_positions(mono_inputs)
+                cs_masked_rows, cs_masked_cols = self._get_mask_token_positions(cs_inputs)
+                
+
+                # Only getting the final output
                 if len(selected_layers) == 0 or -1 in selected_layers:
                     mono_outputs = self.model(**mono_inputs, output_hidden_states=True)
                     cs_outputs = self.model(**cs_inputs, output_hidden_states=True)
 
-                    mono_log_probs = torch.log(mono_outputs['logits'].softmax(dim=-1)) # batch*seq*vocab
-                    cs_log_probs = torch.log(cs_outputs['logits'].softmax(dim=-1))
-                    
-                    
-                    mono_topk_log_prob, mono_topk_indices = mono_log_probs.topk(beam_topk, sorted=True) # indices return indices in vocabulary
-                    cs_topk_log_prob, cs_topk_indices = cs_log_probs.topk(beam_topk, sorted=True)
+                    mono_log_probs = torch.log(mono_outputs['logits'].softmax(dim=-1)) # batch*seq_length*vocab
+                    cs_log_probs = torch.log(cs_outputs['logits'].softmax(dim=-1)) # batch*seq_length*vocab
+
+                    self._do_beam_search(mono_masked_rows, mono_masked_cols, cs_masked_rows, cs_masked_cols, mono_log_probs, cs_log_probs, mono_inputs, cs_inputs, beam_topk, ranking_topk, max_obj_token_len, obj_token_lengths, mono_rank_preds, cs_rank_preds)
                     
 
-                    mono_masked_indices = torch.nonzero(mono_inputs['input_ids'] == self.tokenizer.mask_token_id, as_tuple=False)
-                    mono_masked_index = dict()
-                    mono_masked_index_list = []
-                    mono_masked_rows, mono_masked_cols = [], []
-                    for pos in mono_masked_indices:
-                        row_pos = pos[0].item()
-                        col_pos = pos[1].item()
-                        if row_pos not in mono_masked_index:
-                            mono_masked_index[row_pos] = []
-                        mono_masked_index[row_pos].append(col_pos)
-                    
-                    for key in sorted(mono_masked_index.keys()):
-                        mono_masked_rows.append(key) 
-                        mono_masked_cols.append(min(mono_masked_index[key]))
-                    
-                
-
-                    cs_masked_indices = torch.nonzero(cs_inputs['input_ids'] == self.tokenizer.mask_token_id, as_tuple=False)
-                    
-                    cs_masked_index = dict()
-                    cs_masked_index_list = []
-                    cs_masked_rows, cs_masked_cols = [], []
-                    for pos in cs_masked_indices:
-                        row_pos = pos[0].item()
-                        col_pos = pos[1].item()
-                        if row_pos not in cs_masked_index:
-                            cs_masked_index[row_pos] = []
-                        cs_masked_index[row_pos].append(col_pos)
-                    
-                    for key in sorted(cs_masked_index.keys()):
-                        cs_masked_rows.append(key) 
-                        cs_masked_cols.append(min(cs_masked_index[key]))
-                    
-                    
-                    # all these have batch_size*1
-                    mono_start_pos = np.array(mono_masked_cols.copy())[..., np.newaxis] # batch_size*1
-                    cs_start_pos = np.array(cs_masked_cols.copy())[..., np.newaxis] # batch_size*1
-
-                    mono_current_pos = np.array(mono_masked_cols.copy())[..., np.newaxis] # batch_size*1
-                    cs_current_pos = np.array(cs_masked_cols.copy())[..., np.newaxis] # batch_size*1
-                    
-                    mono_masked_rows = np.array(mono_masked_rows)[..., np.newaxis] 
-                    mono_masked_cols = np.array(mono_masked_cols)[..., np.newaxis]
-                    cs_masked_rows = np.array(cs_masked_rows)[..., np.newaxis]
-                    cs_masked_cols = np.array(cs_masked_cols)[..., np.newaxis]
-
-                    
-
-                    
-
-                    mono_topk_log_prob, mono_topk_indices = mono_topk_log_prob[mono_masked_rows, mono_masked_cols, :], mono_topk_indices[mono_masked_rows, mono_masked_cols, :] # bach*1*k
-                    cs_topk_log_prob, cs_topk_indices = cs_topk_log_prob[cs_masked_rows, cs_masked_cols, :], cs_topk_indices[cs_masked_rows, cs_masked_cols, :]
-                    []
-                    
-                    batch_sz = mono_current_pos.shape[0]
-
-                    mono_batch_rank_preds = []
-                    cs_batch_rank_preds = []
-                    for batch_idx in range(batch_sz):
-                        mono_dict = dict()
-                        cs_dict = dict()
-                        mono_batch_rank_preds.append(mono_dict)
-                        cs_batch_rank_preds.append(cs_dict)
-                    
-                    for batch_idx in range(batch_sz):
-                        mono_topk_log_prob_instance, mono_topk_indices_instance = mono_topk_log_prob[batch_idx][0], mono_topk_indices[batch_idx][0]
-                        cs_topk_log_prob_instance, cs_topk_indices_instance = cs_topk_log_prob[batch_idx][0], cs_topk_indices[batch_idx][0]
-                        
-                        for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
-                           
-                            decoded_word = self.tokenizer.decode(curr_mono_topk_token_idx)
-                            decoded_word = f"{decoded_word}<{curr_mono_topk_token_idx}>"
-                            #
-                            mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()
-                            #
-                        
-                        for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
-                            decoded_word = self.tokenizer.decode(curr_cs_topk_token_idx)
-                            decoded_word = f"{decoded_word}<{curr_cs_topk_token_idx}>"
-                            cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob.item()
-                            #
-
-                    batch_indices = torch.arange(batch_sz).unsqueeze(-1)
-                    #
-
-
-                    mono_topk_log_prob = mono_topk_log_prob.permute((2,0,1)) # k b
-                    mono_topk_indices = mono_topk_indices.permute((2,0,1)).type(torch.LongTensor)
-                    
-
-                    cs_topk_log_prob = cs_topk_log_prob.permute((2,0,1)) # k*batch_size*1
-                    cs_topk_indices = cs_topk_indices.permute((2,0,1)).type(torch.LongTensor) # k*batch_size*1
-                    
-
-                    for span_len in range(1, max_obj_token_len):
-                        mono_span_pos_rows = []
-                        mono_span_pos_cols = []
-
-                        cs_span_pos_rows = []
-                        cs_span_pos_cols = []
-
-                        selected_mono_topk_indices = []
-                        selected_cs_topk_indices = []
-
-                        mono_span_pos = np.zeros((batch_sz, span_len))
-                        cs_span_pos = np.zeros((batch_sz, span_len))
-                        
-
-                        # set span indices
-                        for batch_idx in range(batch_sz):
-                            if obj_token_lengths[batch_idx] >= (span_len+1):
-                                mono_current_pos[batch_idx][0] += 1
-                                mono_span_pos_rows.append([batch_idx])
-                                mono_span_pos_cols.append(np.arange(mono_start_pos[batch_idx][0], mono_current_pos[batch_idx][0])) # batch_size*span
-                                selected_mono_topk_indices.append(mono_topk_indices.permute((1,0,2))[batch_idx].unsqueeze(0))
-                        
-                                cs_current_pos[batch_idx][0] += 1
-                                cs_span_pos_rows.append([batch_idx])
-                                cs_span_pos_cols.append(np.arange(cs_start_pos[batch_idx][0], cs_current_pos[batch_idx][0])) # batch_size*span
-                                selected_cs_topk_indices.append(cs_topk_indices.permute((1,0,2))[batch_idx].unsqueeze(0))
-                        #
-                        
-                        selected_cs_topk_indices = torch.cat(selected_cs_topk_indices, axis=0).permute((1,0,2))
-                        selected_mono_topk_indices = torch.cat(selected_mono_topk_indices, axis=0).permute((1,0,2))
-                        #
-                        
-
-                        all_mono_joint_proba = []
-                        all_cs_joint_proba = []
-
-                        for cand_rank in range(len(mono_topk_log_prob)):
-                            
-                            mono_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in mono_inputs.items()}
-                            mono_inputs_copy['input_ids'][mono_span_pos_rows, mono_span_pos_cols] = selected_mono_topk_indices[cand_rank].to('cuda') # batch*seq_length*
-                            #
-                            
-                            cs_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in cs_inputs.items()}
-                            cs_inputs_copy['input_ids'][cs_span_pos_rows, cs_span_pos_cols] = selected_cs_topk_indices[cand_rank].to('cuda') # batch*seq_length*
-                            #
-
-                            mono_cand_proba = self.model(**mono_inputs_copy).logits.softmax(dim=-1) # batch*seq_length*vocab
-                            
-                            for key, tensor in mono_inputs.items():
-                                tensor.detach().cpu()
-                            mono_cand_proba = torch.log(mono_cand_proba)
-                            #
-                            cs_cand_proba = self.model(**cs_inputs_copy).logits.softmax(dim=-1) # batch*seq_length*vocab
-                            
-                            cs_cand_proba = torch.log(cs_cand_proba)
-                            for key, tensor in cs_inputs.items():
-                                tensor.detach().cpu()
-                            #
-
-                            mono_cand_proba = mono_cand_proba[batch_indices, mono_current_pos, :].squeeze(1) # batch*vocab
-                            cs_cand_proba = cs_cand_proba[batch_indices, cs_current_pos, :].squeeze(1) #batch*vocab
-                            #
-
-                            mono_prev_proba = mono_topk_log_prob[cand_rank] # batch*len
-                            cs_prev_proba = cs_topk_log_prob[cand_rank] # batch*1
-                            #
-
-                            mono_joint_proba = mono_prev_proba + mono_cand_proba # batch*vocab
-                            mono_joint_proba = mono_joint_proba.unsqueeze(1)
-                            all_mono_joint_proba.append(mono_joint_proba)
-                            cs_joint_proba = cs_prev_proba + cs_cand_proba # batch*vocab
-                            cs_joint_proba = cs_joint_proba.unsqueeze(1)
-                            all_cs_joint_proba.append(cs_joint_proba)
-                            #
-                        
-                        all_mono_joint_proba = torch.cat(all_mono_joint_proba, dim=1) # batch*k*vocab
-                        all_cs_joint_proba = torch.cat(all_cs_joint_proba, dim=1) # batch*k*vocab
-                        #
-
-                        vocab_size = all_cs_joint_proba.shape[-1]
-                        #
-
-                        all_mono_joint_proba = all_mono_joint_proba.view(all_mono_joint_proba.shape[0], -1) #batch*(k*vocab)
-                        all_cs_joint_proba = all_cs_joint_proba.view(all_cs_joint_proba.shape[0], -1) #batch*(k*vocab)
-                        #
-
-                        next_mono_topk_log_prob, next_mono_topk_indices = all_mono_joint_proba.topk(beam_topk, sorted=True) #batch*k
-                        prefix_indices_mono, vocab_indices_mono = next_mono_topk_indices//vocab_size, next_mono_topk_indices%vocab_size
-                        prefix_indices_mono = prefix_indices_mono.cpu()
-                        #
-
-
-                        next_cs_topk_log_prob, next_cs_topk_indices = all_cs_joint_proba.topk(beam_topk, sorted=True)
-                        prefix_indices_cs, vocab_indices_cs = next_cs_topk_indices//vocab_size, next_cs_topk_indices%vocab_size
-                        prefix_indices_cs = prefix_indices_cs.cpu()
-                        #
-
-                        new_mono_indices = torch.zeros((batch_sz, len(mono_topk_log_prob), span_len+1)) # batch*k*len
-                        new_cs_indices = torch.zeros((batch_sz, len(cs_topk_log_prob), span_len+1))
-                        #
-
-                        mono_topk_indices = mono_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
-                        cs_topk_indices = cs_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
-                        #
-
-                        for batch_idx in range(batch_sz):
-                            #
-                            new_mono_indices[batch_idx, :, :-1] = mono_topk_indices[batch_idx][prefix_indices_mono[batch_idx]]
-                            new_mono_indices[batch_idx, :, -1] = vocab_indices_mono[batch_idx]
-                            #
-
-                            new_cs_indices[batch_idx, :, :-1] = cs_topk_indices[batch_idx][prefix_indices_cs[batch_idx]]
-                            new_cs_indices[batch_idx, :, -1] =  vocab_indices_cs[batch_idx]
-                            #
-
-                            if obj_token_lengths[batch_idx] >= (span_len+1):
-                                mono_topk_indices_instance = new_mono_indices[batch_idx]
-                                mono_topk_log_prob_instance = next_mono_topk_log_prob[batch_idx]
-                                for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
-                                    
-                                    vocab_ids = curr_mono_topk_token_idx.type(torch.LongTensor)
-                                    decoded_word =  self.tokenizer.batch_decode(vocab_ids)
-                                    decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)])
-
-                                    #
-                                    mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()/(span_len+1)
-                                    #
-                        
-                                cs_topk_indices_instance = new_cs_indices[batch_idx]
-                                cs_topk_log_prob_instance = next_cs_topk_log_prob[batch_idx]
-                                for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
-                                    vocab_ids = curr_cs_topk_token_idx.type(torch.LongTensor)
-                                    decoded_word = self.tokenizer.batch_decode(vocab_ids)
-                                    decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)])
-                                    cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob.item()/(span_len+1)
-                                    #
-                        
-                        cs_topk_indices = new_cs_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
-                        mono_topk_indices = new_mono_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
-                        #
-
-                        mono_topk_log_prob = next_mono_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
-                        cs_topk_log_prob = next_cs_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
-                        #
-
-                                     
-                    # rank all preds
-                    for batch_preds in mono_batch_rank_preds:
-                        #
-                        sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
-                        selected_words = sorted_batch_preds[:ranking_topk]
-                        mono_rank_preds.append(selected_words)
-                        #
-                    
-                    for batch_preds in cs_batch_rank_preds:
-                        #
-                        sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
-                        selected_words = sorted_batch_preds[:ranking_topk]
-                        cs_rank_preds.append(selected_words)
-                        #
-                
                 else:
                     mono_outputs = self.model(**mono_inputs, output_hidden_states=True)
                     cs_outputs = self.model(**cs_inputs, output_hidden_states=True)
@@ -529,271 +683,19 @@ class EncoderWrapper:
                     cs_hidden_states = cs_outputs.hidden_states[1:]
 
 
-                    mono_masked_indices = torch.nonzero(mono_inputs['input_ids'] == self.tokenizer.mask_token_id, as_tuple=False)
-                    mono_masked_index = dict()
-                    mono_masked_index_list = []
-                    mono_masked_rows, mono_masked_cols = [], []
-                    for pos in mono_masked_indices:
-                        row_pos = pos[0].item()
-                        col_pos = pos[1].item()
-                        if row_pos not in mono_masked_index:
-                            mono_masked_index[row_pos] = []
-                        mono_masked_index[row_pos].append(col_pos)
-                    for key in sorted(mono_masked_index.keys()):
-                        mono_masked_rows.append(key) 
-                        mono_masked_cols.append(min(mono_masked_index[key]))
-                    
-                    
-
-                    cs_masked_indices = torch.nonzero(cs_inputs['input_ids'] == self.tokenizer.mask_token_id, as_tuple=False)
-                    cs_masked_index = dict()
-                    cs_masked_index_list = []
-                    cs_masked_rows, cs_masked_cols = [], []
-                    for pos in cs_masked_indices:
-                        row_pos = pos[0].item()
-                        col_pos = pos[1].item()
-                        if row_pos not in cs_masked_index:
-                            cs_masked_index[row_pos] = []
-                        cs_masked_index[row_pos].append(col_pos)
-                    for key in sorted(cs_masked_index.keys()):
-                        cs_masked_rows.append(key) 
-                        cs_masked_cols.append(min(cs_masked_index[key]))
-                    
-                    
-                    # all these have batch_size*1
-                    mono_start_pos = np.array(mono_masked_cols.copy())[..., np.newaxis] # batch_size*1
-                    cs_start_pos = np.array(cs_masked_cols.copy())[..., np.newaxis] # batch_size*1
-                    mono_masked_rows = np.array(mono_masked_rows)[..., np.newaxis] 
-                    cs_masked_rows = np.array(cs_masked_rows)[..., np.newaxis]
-                    
-
-    
-
-                    batch_sz = len(batch)
-                    batch_indices = torch.arange(batch_sz).unsqueeze(-1)
-
-        
-
                     for layer in  selected_layers:
-                        mono_batch_rank_preds = []
-                        cs_batch_rank_preds = []
-                        for batch_idx in range(batch_sz):
-                            mono_dict = dict()
-                            cs_dict = dict()
-                            mono_batch_rank_preds.append(mono_dict)
-                            cs_batch_rank_preds.append(cs_dict)
-                        
-                    
-                        
+                        # check if the layer isnt out of bound
                         assert layer < len(mono_hidden_states)
 
                         mono_logits = self.model.lm_head(mono_hidden_states[layer])
                         cs_logits = self.model.lm_head(cs_hidden_states[layer])
                         
                         
-                        mono_log_probs = torch.log(mono_logits.softmax(dim=-1)) # batch*seq*vocab
+                        mono_log_probs = torch.log(mono_logits.softmax(dim=-1)) # [batch*seq_length*vocab]
                         cs_log_probs = torch.log(cs_logits.softmax(dim=-1))
+
+                        self._do_beam_search(mono_masked_rows, mono_masked_cols, cs_masked_rows, cs_masked_cols, mono_log_probs, cs_log_probs, mono_inputs, cs_inputs, beam_topk, ranking_topk, max_obj_token_len, obj_token_lengths, mono_rank_preds_per_layer[layer], cs_rank_preds_per_layer[layer]) 
                         
-                        
-                        mono_topk_log_prob, mono_topk_indices = mono_log_probs.topk(beam_topk, sorted=True) # indices return indices in vocabulary
-                        cs_topk_log_prob, cs_topk_indices = cs_log_probs.topk(beam_topk, sorted=True)
-                        
-
-
-                        mono_current_pos = np.array(mono_masked_cols.copy())[..., np.newaxis] # batch_size*1
-                        cs_current_pos = np.array(cs_masked_cols.copy())[..., np.newaxis] # batch_size*1
-                        
-                    
-        
-
-                        mono_topk_log_prob, mono_topk_indices = mono_topk_log_prob[mono_masked_rows, mono_start_pos, :], mono_topk_indices[mono_masked_rows, mono_start_pos, :] # bach*1*k
-                        cs_topk_log_prob, cs_topk_indices = cs_topk_log_prob[cs_masked_rows, cs_start_pos, :], cs_topk_indices[cs_masked_rows, cs_start_pos, :]
-                        
-                        
-                        
-                        for batch_idx in range(batch_sz):
-                            mono_topk_log_prob_instance, mono_topk_indices_instance = mono_topk_log_prob[batch_idx][0], mono_topk_indices[batch_idx][0]
-                            cs_topk_log_prob_instance, cs_topk_indices_instance = cs_topk_log_prob[batch_idx][0], cs_topk_indices[batch_idx][0]
-                            
-                            for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
-                                #
-                                decoded_word = self.tokenizer.decode(curr_mono_topk_token_idx)
-                                decoded_word = f"{decoded_word}<{curr_mono_topk_token_idx}>"
-                                mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()
-                                
-                            
-                            for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
-                                decoded_word = self.tokenizer.decode(curr_cs_topk_token_idx)
-                                decoded_word = f"{decoded_word}<{curr_cs_topk_token_idx}>"
-                                cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob.item()
-                                #
-                            
-
-                        
-                        mono_topk_log_prob = mono_topk_log_prob.permute((2,0,1))
-                        mono_topk_indices = mono_topk_indices.permute((2,0,1)).type(torch.LongTensor)
-                        
-
-                        cs_topk_log_prob = cs_topk_log_prob.permute((2,0,1)) # k*batch_size*1
-                        cs_topk_indices = cs_topk_indices.permute((2,0,1)).type(torch.LongTensor) # k*batch_size*1
-                        
-
-                        for span_len in range(1, max_obj_token_len):
-                            mono_span_pos_rows = []
-                            mono_span_pos_cols = []
-
-                            cs_span_pos_rows = []
-                            cs_span_pos_cols = []
-
-                            selected_mono_topk_indices = []
-                            selected_cs_topk_indices = []
-
-                            mono_span_pos = np.zeros((batch_sz, span_len))
-                            cs_span_pos = np.zeros((batch_sz, span_len))
-
-                            # set span indices
-                            for batch_idx in range(batch_sz):
-                                if obj_token_lengths[batch_idx] >= (span_len+1):
-                                    mono_current_pos[batch_idx][0] += 1
-                                    mono_span_pos_rows.append([batch_idx])
-                                    mono_span_pos_cols.append(np.arange(mono_start_pos[batch_idx][0], mono_current_pos[batch_idx][0])) # batch_size*span
-                                    selected_mono_topk_indices.append(mono_topk_indices.permute((1,0,2))[batch_idx].unsqueeze(0))
-
-                                    cs_current_pos[batch_idx][0] += 1
-                                    cs_span_pos_rows.append([batch_idx])
-                                    cs_span_pos_cols.append(np.arange(cs_start_pos[batch_idx][0], cs_current_pos[batch_idx][0])) # batch_size*span
-                                    selected_cs_topk_indices.append(cs_topk_indices.permute((1,0,2))[batch_idx].unsqueeze(0))
-                                
-                            
-                            selected_cs_topk_indices = torch.cat(selected_cs_topk_indices, axis=0).permute((1,0,2))
-                            selected_mono_topk_indices = torch.cat(selected_mono_topk_indices, axis=0).permute((1,0,2))
-                            
-                            
-
-                            all_mono_joint_proba = []
-                            all_cs_joint_proba = []
-
-                            for cand_rank in range(len(mono_topk_log_prob)):
-                                
-                                mono_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in mono_inputs.items()}
-                                mono_inputs_copy['input_ids'][mono_span_pos_rows, mono_span_pos_cols] = selected_mono_topk_indices[cand_rank].to('cuda') # batch*seq_length*
-                                
-                                cs_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in cs_inputs.items()}
-                                cs_inputs_copy['input_ids'][cs_span_pos_rows, cs_span_pos_cols] = selected_cs_topk_indices[cand_rank].to('cuda') # batch*seq_length*
-                                
-
-                                mono_outputs = self.model(**mono_inputs_copy, output_hidden_states=True).hidden_states[1:][layer]
-                                mono_cand_proba = self.model.lm_head(mono_outputs).softmax(dim=-1) # batch*seq_length*vocab
-                                mono_cand_proba = torch.log(mono_cand_proba)
-                                
-                                for key, tensor in mono_inputs.items():
-                                    tensor.detach().cpu()
-          
-                                cs_outputs =  self.model(**cs_inputs_copy, output_hidden_states=True).hidden_states[layer]
-                                cs_cand_proba = self.model.lm_head(cs_outputs).softmax(dim=-1) # batch*seq_length*vocab
-                                cs_cand_proba = torch.log(cs_cand_proba)
-                                
-                                for key, tensor in cs_inputs.items():
-                                    tensor.detach().cpu()
-
-
-                                mono_cand_proba = mono_cand_proba[batch_indices, mono_current_pos, :].squeeze(1) # batch*vocab
-                                cs_cand_proba = cs_cand_proba[batch_indices, cs_current_pos, :].squeeze(1) #batch*vocab
-                                
-
-                                mono_prev_proba = mono_topk_log_prob[cand_rank] # batch*len
-                                cs_prev_proba = cs_topk_log_prob[cand_rank] # batch*1
-                                
-
-                                mono_joint_proba = mono_prev_proba + mono_cand_proba # batch*vocab
-                                mono_joint_proba = mono_joint_proba.unsqueeze(1)
-                                all_mono_joint_proba.append(mono_joint_proba)
-                                cs_joint_proba = cs_prev_proba + cs_cand_proba # batch*vocab
-                                cs_joint_proba = cs_joint_proba.unsqueeze(1)
-                                all_cs_joint_proba.append(cs_joint_proba)
-                                
-                            
-                            all_mono_joint_proba = torch.cat(all_mono_joint_proba, dim=1) # batch*k*vocab
-                            all_cs_joint_proba = torch.cat(all_cs_joint_proba, dim=1) # batch*k*vocab
-                            
-
-                            vocab_size = all_cs_joint_proba.shape[-1]
-                            
-
-                            all_mono_joint_proba = all_mono_joint_proba.view(all_mono_joint_proba.shape[0], -1) #batch*(k*vocab)
-                            all_cs_joint_proba = all_cs_joint_proba.view(all_cs_joint_proba.shape[0], -1) #batch*(k*vocab)
-                            
-
-                            next_mono_topk_log_prob, next_mono_topk_indices = all_mono_joint_proba.topk(beam_topk, sorted=True) #batch*k
-                            prefix_indices_mono, vocab_indices_mono = next_mono_topk_indices//vocab_size, next_mono_topk_indices%vocab_size
-                            prefix_indices_mono = prefix_indices_mono.cpu()
-                            
-
-
-                            next_cs_topk_log_prob, next_cs_topk_indices = all_cs_joint_proba.topk(beam_topk, sorted=True)
-                            prefix_indices_cs, vocab_indices_cs = next_cs_topk_indices//vocab_size, next_cs_topk_indices%vocab_size
-                            prefix_indices_cs = prefix_indices_cs.cpu()
-                            
-
-                            new_mono_indices = torch.zeros((batch_sz, len(mono_topk_log_prob), span_len+1)) # batch*k*len
-                            new_cs_indices = torch.zeros((batch_sz, len(cs_topk_log_prob), span_len+1))
-                            
-
-                            mono_topk_indices = mono_topk_indices.permute((1,0,2)) #batch*k*1
-                            cs_topk_indices = cs_topk_indices.permute((1,0,2)) #batch*k*1
-                            
-
-                            for batch_idx in range(batch_sz):
-                                new_mono_indices[batch_idx, :, :-1] = mono_topk_indices[batch_idx][prefix_indices_mono[batch_idx]]
-                                new_mono_indices[batch_idx, :, -1] = vocab_indices_mono[batch_idx]
-
-                                new_cs_indices[batch_idx, :, :-1] = cs_topk_indices[batch_idx][prefix_indices_cs[batch_idx]]
-                                new_cs_indices[batch_idx, :, -1] =  vocab_indices_cs[batch_idx]
-                                
-
-                                if obj_token_lengths[batch_idx] >= (span_len+1):
-                                    mono_topk_indices_instance = new_mono_indices[batch_idx]
-                                    mono_topk_log_prob_instance = next_mono_topk_log_prob[batch_idx]
-                                    for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
-                                        vocab_indices = curr_mono_topk_token_idx.type(torch.LongTensor)
-                                        decoded_word = self.tokenizer.batch_decode(vocab_indices)
-                                        decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_indices)])
-                                        mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()/(span_len+1)
-                                        
-                            
-                                    cs_topk_indices_instance = new_cs_indices[batch_idx]
-                                    cs_topk_log_prob_instance = next_cs_topk_log_prob[batch_idx]
-                                    for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
-                                        vocab_indices = curr_cs_topk_token_idx.type(torch.LongTensor)
-                                        decoded_word = self.tokenizer.batch_decode(vocab_indices)
-                                        decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_indices)])
-                                        cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob.item()/(span_len+1)
-                                        
-                            
-                            cs_topk_indices = new_cs_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
-                            mono_topk_indices = new_mono_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
-                            
-
-                            mono_topk_log_prob = next_mono_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
-                            cs_topk_log_prob = next_cs_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
-                            
-
-                              
-                        # rank all preds
-                        for batch_preds in mono_batch_rank_preds:
-                            sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
-                            selected_words = sorted_batch_preds[:ranking_topk]
-                            mono_rank_preds_per_layer[layer].append(selected_words)
-                            
-                        
-                        for batch_preds in cs_batch_rank_preds:
-                            sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
-                            selected_words = sorted_batch_preds[:ranking_topk]
-                            cs_rank_preds_per_layer[layer].append(selected_words)
-                        
-                            
-                        
-        
         if len(selected_layers) == 0 or -1 in selected_layers:
             return mono_rank_preds, cs_rank_preds, labels
         else:
@@ -951,6 +853,9 @@ class DecoderLensWrapper:
        self.target_len = target_len
     
     def _shift_right(self, input_ids):
+        '''
+        Shift the label input ids to the right. Taken from https://github.com/huggingface/transformers/blob/main/src/transformers/models/mt5/modeling_mt5.py#L857-L882 with some adjustments
+        '''
         decoder_start_token_id = self.model.config.decoder_start_token_id
         pad_token_id = self.model.config.pad_token_id
 
@@ -979,43 +884,62 @@ class DecoderLensWrapper:
            output_attentions=True,
            return_dict=True
        )
-       #
        return encoder_outputs[0], encoder_outputs[1][1:], encoder_outputs[2]
 
-    def _tokenize_obj(self, obj_labels):
-            all_obj_tokens = []
-            obj_token_lengths = []
-            label_token_lengths = []
-            all_attn_masks = []
-            all_labels = []
-            for obj_label in obj_labels:
-                obj_tokens = self.tokenizer(f"<extra_id_0> {obj_label} <extra_id_1>")
-                attn_mask = obj_tokens['attention_mask']
-                obj_tokens = obj_tokens['input_ids']
-                label_token_lengths.append(len(obj_tokens))
-                all_attn_masks.append(attn_mask)
-                label = obj_tokens
-                all_labels.append(label)
-                obj_tokens = obj_tokens[1:-2]
-                obj_token_lengths.append(len(obj_tokens))
-                all_obj_tokens.append(obj_tokens)
-            
-            max_obj_token_len = max(obj_token_lengths)
-            max_label_token_len = max(label_token_lengths)
+    def _tokenize_obj(self, obj_labels: List[str]) -> [List[str], List[str], List[int], List[int], List[List[int]]]:
+        """
+        Tokenize all objects which then to be fed into the decoder part
 
-            # add padding
-            for i in range(len(all_obj_tokens)):
-                num_pad_tokens = max_obj_token_len-obj_token_lengths[i]
-                all_obj_tokens[i] += [self.tokenizer.pad_token_id]*num_pad_tokens
-                
-            for i in range(len(all_labels)):
-                num_pad_tokens = max_label_token_len-label_token_lengths[i]
-                all_labels[i] += [self.tokenizer.pad_token_id]*num_pad_tokens
-                all_attn_masks[i] += [0]*num_pad_tokens
+        @param: obj_labels: list of object entities per instance
 
-            return all_obj_tokens, all_labels, obj_token_lengths, label_token_lengths, all_attn_masks
+        @return all_obj_tokens: list of object tokens (w/o the sentinel tokens)
+        @return all_labels: list ofobject tokens (w/ the sentinel tokens)
+        @return obj_token_lengths: length of each elment in all_obj_tokens
+        @return label_token_lengths: length of each elment in all_labels
+        @return all_attn_masks: all attention masks for input
+        """
+
+        all_obj_tokens = []
+        obj_token_lengths = []
+        label_token_lengths = []
+        all_attn_masks = []
+        all_labels = []
+        for obj_label in obj_labels:
+            obj_tokens = self.tokenizer(f"<extra_id_0> {obj_label} <extra_id_1>")
+            attn_mask = obj_tokens['attention_mask']
+            obj_tokens = obj_tokens['input_ids']
+            label_token_lengths.append(len(obj_tokens))
+            all_attn_masks.append(attn_mask)
+            label = obj_tokens
+            all_labels.append(label)
+            obj_tokens = obj_tokens[1:-2]
+            obj_token_lengths.append(len(obj_tokens))
+            all_obj_tokens.append(obj_tokens)
         
-    def _mask_sentences(self, prompts):
+        max_obj_token_len = max(obj_token_lengths)
+        max_label_token_len = max(label_token_lengths)
+
+        # add padding
+        for i in range(len(all_obj_tokens)):
+            num_pad_tokens = max_obj_token_len-obj_token_lengths[i]
+            all_obj_tokens[i] += [self.tokenizer.pad_token_id]*num_pad_tokens
+            
+        for i in range(len(all_labels)):
+            num_pad_tokens = max_label_token_len-label_token_lengths[i]
+            all_labels[i] += [self.tokenizer.pad_token_id]*num_pad_tokens
+            all_attn_masks[i] += [0]*num_pad_tokens
+
+        return all_obj_tokens, all_labels, obj_token_lengths, label_token_lengths, all_attn_masks
+        
+    def _mask_sentences(self, prompts: List[str]) -> List[str]:
+        """
+        Replace all default object mask tokens with one sentinel token
+
+        @param prompts: A list of prompts
+
+        @return new_prompts: A list of modified prompts having the sentinel token
+        """
+
         new_prompts = []
         for prompt in prompts:
             new_mask = "<extra_id_0>"
@@ -1071,7 +995,6 @@ class DecoderLensWrapper:
             input_ids_lst = [int(token_id) for token_id in input_ids]
             start_pos = input_ids_lst.index(target_word_input_ids[0])
             possible_spans = []
-            #left bound = 5
 
             for left_bound in range(start_pos, len(input_ids)):
                 for right_bound in range(len(input_ids)-1, left_bound-1, -1):
@@ -1080,7 +1003,6 @@ class DecoderLensWrapper:
                         continue
                     match_values = [input_id_token==target_input_id_token for input_id_token, target_input_id_token in zip(input_ids_subset, target_word_input_ids)]
                     if sum(match_values)==len(match_values):
-                        #
                         possible_spans.append([i for i in range(left_bound,right_bound+1)])
             
             assert len(possible_spans) > 0
@@ -1090,8 +1012,43 @@ class DecoderLensWrapper:
             else:
                 span_positions_per_batch.append(possible_spans[0])
         return span_positions_per_batch
+    
+    def _calculate_subj_obj_attention_per_instance(self, tokens_attention: np.array, attention_weights_per_layer: Dict[int, Dict[int, List[float]]]
+                                                   , layer: int, start_obj_idx: int, end_obj_idx: int, start_subj_idx: int, end_subj_idx: int):
+        """
+        Calculates the average of sum of attention weights on all subject tokens attending particular object token across all object tokens
 
-    def extract_attention_scores_subj_obj(self, instances, batch_size=16, selected_layers=[]):
+        @param tokens_attention: all attention weights on every head of particular encoder layer for one input
+            [head, seq_length, seq_length]
+        @param attention_weights_per_layer: average subject-object attention weigthts on every head of one encoder layer for all inputs
+        @param layer: layer position
+        @param start_obj_idx: the position of the first object token
+        @param end_obj_idx: the position of the last object token
+        @param start_subj_idx: the position of the first subject token
+        @param end_subj_idx: the position of the last subject token
+        """
+        
+        span_attention = tokens_attention[:, start_obj_idx:end_obj_idx+1, start_subj_idx:end_subj_idx+1] # extract subject tokens attention of each object token z
+        span_attention_weight_average_per_head = span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False) # sum over the subject tokens get the average over all object tokens
+        for head_pos, attention_weight_avg in enumerate(span_attention_weight_average_per_head):
+            if head_pos not in attention_weights_per_layer[layer]:
+                attention_weights_per_layer[layer][head_pos] = []
+            attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+
+    def extract_attention_scores_subj_obj(self, instances: List[Dict], batch_size: int = 16, selected_layers: List[int] = []):
+        """
+        Calculates the average of sum of attention weights on all subject tokens attending particular object token across all object tokens for one input
+
+        @param instances: all input instances containing dictionary
+        @param batch_size: number of instances in one batch
+        @param selected_layers: encoder layer indices that we want to analyze
+
+        @return mono_attention_weights_per_layer: average subject-object attention weights for each head and layer 
+            given all monolingual inputs
+        @return cs_attention_weights_per_layer: average subject-object attention weights for each head and layer 
+            given all codemixed inputs
+        """
+
         self.model.eval()
         encoder_model = self.model.encoder
         batch_cnt = len(instances)//batch_size
@@ -1105,14 +1062,13 @@ class DecoderLensWrapper:
             mono_subj_labels = [instance['subj_label_same_lang'] for instance in batch]
             cs_subj_labels = [instance['subj_label_cross_lang'] for instance in batch]
 
+            # create parallel code-switching statements
             mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
             cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
 
-            
             all_mono_subj_tokens, _, mono_subj_token_lengths, _, _ = self._tokenize_obj(mono_subj_labels)
             for i in range(len(all_mono_subj_tokens)):
                 all_mono_subj_tokens[i] = all_mono_subj_tokens[i][:mono_subj_token_lengths[i]]
-            
             
             all_cs_subj_tokens, _, cs_subj_token_lengths, _, _  = self._tokenize_obj(cs_subj_labels)
             for i in range(len(all_cs_subj_tokens)):
@@ -1122,21 +1078,26 @@ class DecoderLensWrapper:
             for i in range(len(all_obj_tokens)):
                 all_obj_tokens[i] = all_obj_tokens[i][:obj_token_lengths[i]]
             
-
             mono_inputs = self.tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt')
             cs_inputs = self.tokenizer(cs_prompts, padding=True, truncation=True, return_tensors='pt')
+
+            # find subject entity span positions
             mono_subj_spans = self._find_span(mono_inputs['input_ids'], all_mono_subj_tokens, False)
             cs_subj_spans = self._find_span(cs_inputs['input_ids'], all_cs_subj_tokens, False)
+
+            # find object entity span positions
             mono_obj_spans = self._find_span(mono_inputs['input_ids'], all_obj_tokens, True)
             cs_obj_spans = self._find_span(cs_inputs['input_ids'], all_obj_tokens, True)
 
             mono_inputs = mono_inputs.to('cuda')
             cs_inputs = mono_inputs.to('cuda')
+
             mono_attentions = encoder_model(**mono_inputs, output_attentions=True).attentions
             cs_attentions = encoder_model(**cs_inputs, output_attentions=True).attentions
 
             mono_attention_weights_per_layer = dict()
             cs_attention_weights_per_layer = dict()
+
             for layer in selected_layers:
                 if layer not in mono_attention_weights_per_layer:
                     mono_attention_weights_per_layer[layer] = dict()
@@ -1146,24 +1107,25 @@ class DecoderLensWrapper:
                 mono_attentions_spec_layer = mono_attentions[layer].detach().cpu().numpy()
                 cs_attention_spec_layer = cs_attentions[layer].detach().cpu().numpy()
                 for batch_idx in range(len(batch)):
+                    # calculate subject-object attention for monolingual input
                     mono_tokens_attention = mono_attentions_spec_layer[batch_idx]
-                    cs_tokens_attention = cs_attention_spec_layer[batch_idx]
-
-                    mono_span_attention = mono_tokens_attention[:, mono_obj_spans[batch_idx][0]:mono_obj_spans[batch_idx][-1]+1, mono_subj_spans[batch_idx][0]:mono_subj_spans[batch_idx][-1]+1]
-                    cs_span_attention = cs_tokens_attention[:, cs_obj_spans[batch_idx][0]:cs_obj_spans[batch_idx][-1]+1, cs_subj_spans[batch_idx][0]:cs_subj_spans[batch_idx][-1]+1]
-
-                    mono_span_attention_weight_average_per_head = mono_span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False)
-                    cs_span_attention_weight_average_per_head = cs_span_attention.sum(axis=-1, keepdims=False).mean(axis=1, keepdims=False) #num_heads
-                    for head_pos, attention_weight_avg in enumerate(mono_span_attention_weight_average_per_head):
-                        if head_pos not in mono_attention_weights_per_layer[layer]:
-                            mono_attention_weights_per_layer[layer][head_pos] = []
-                        mono_attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
+                    mono_start_obj_idx = mono_obj_spans[batch_idx][0]
+                    mono_end_obj_idx = mono_obj_spans[batch_idx][-1]
+                    mono_start_subj_idx = mono_subj_spans[batch_idx][0] 
+                    mono_end_subj_idx = mono_subj_spans[batch_idx][-1]
+                    self._calculate_subj_obj_attention_per_instance(mono_tokens_attention, mono_attention_weights_per_layer, layer
+                                                                    , mono_start_obj_idx, mono_end_obj_idx, mono_start_subj_idx, mono_end_subj_idx)
                     
-                    for head_pos, attention_weight_avg in enumerate(cs_span_attention_weight_average_per_head):
-                        if head_pos not in cs_attention_weights_per_layer[layer]:
-                            cs_attention_weights_per_layer[layer][head_pos] = []
-                        cs_attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
-
+                    # calculate subject-object attention for codemixed input
+                    cs_tokens_attention = cs_attention_spec_layer[batch_idx]
+                    cs_start_obj_idx = cs_obj_spans[batch_idx][0]
+                    cs_end_obj_idx = cs_obj_spans[batch_idx][-1]
+                    cs_start_subj_idx = cs_subj_spans[batch_idx][0] 
+                    cs_end_subj_idx = cs_subj_spans[batch_idx][-1]
+                    self._calculate_subj_obj_attention_per_instance(cs_tokens_attention, cs_attention_weights_per_layer, layer
+                                                                    , cs_start_obj_idx, cs_end_obj_idx, cs_start_subj_idx, cs_end_subj_idx)
+          
+        # accumulate all attentions for every layer
         for layer in selected_layers:
             for head_pos in mono_attention_weights_per_layer[layer].keys():
                 mono_attention_weights_per_layer[layer][head_pos] = sum(mono_attention_weights_per_layer[layer][head_pos])/len(mono_attention_weights_per_layer[layer][head_pos])
@@ -1171,8 +1133,246 @@ class DecoderLensWrapper:
             for head_pos in cs_attention_weights_per_layer[layer].keys():
                 cs_attention_weights_per_layer[layer][head_pos] = sum(cs_attention_weights_per_layer[layer][head_pos])/len(cs_attention_weights_per_layer[layer][head_pos])     
         return mono_attention_weights_per_layer, cs_attention_weights_per_layer            
-                
-    def inference_cloze_task(self, instances, batch_size=16, selected_layers=[], beam_topk=5, ranking_topk=5):
+
+    def _get_necessary_mask_positions(self, outputs: torch.Tensor, label_token_lengths: List[int], obj_token_lengths: List[int]):
+        """
+        get necessary position indices for several mask tokens
+        @param outputs: predicted token output logits [batch_size*seq_length*vocab_size]
+        @param label_token_lengths: length of each object entity (including the sentinel tokens)
+        @param obj_token_lengths: length of each object entity (excluding the sentinel tokens)
+
+        @return masked_indices: span indices
+        @return masked_start_idx: first predicted object token's position
+        @return masked_current_idx: current predicted object token's position
+        @return masked_batch_idx: batch indices
+        """
+        masked_indices = []
+        masked_start_idx = []
+        masked_current_idx = []
+        masked_batch_indices = []
+
+        for idx, output in enumerate(outputs):
+            masked_indices.append(list(range(output.size()[1]))[1:-2-(output.size()[1]-label_token_lengths[idx])]) #extract object in-between the sentinel tokens
+            masked_start_idx.append(min(masked_indices[idx]))
+            masked_current_idx.append(min(masked_indices[idx]))
+            masked_batch_indices.append(idx)
+            assert len(masked_indices[idx]) == obj_token_lengths[idx]
+        
+        return masked_indices, masked_start_idx, masked_current_idx, masked_batch_indices
+
+    def _calculate_joint_proba(self, log_probs: torch.Tensor, span_pos_rows: List[List[int]], span_pos_cols: List[List[int]]
+                               , prev_proba: torch.Tensor) -> torch.Tensor:
+        """
+        Calculate joint proba of current topk-frontier with all words in the vocabulary
+
+        @param log_probs: log probabilites tensor for one batch [batch_size, seq_length, vocab]
+        @param span_pos_rows: batch indices that we want to predict the next token [(1...batch_size), 1]
+        @param span_pos_cols: position of previous mask tokens that have been predicted [(1...batch_size), span_length]
+        @param prev_proba: probabilites of ngram_candiate [batch_size, 1]
+
+        @return joint_proba: joint probabilites between top-k and tokens in vocabulary [batch_size, 1, 1]
+        """
+        cand_proba = log_probs[span_pos_rows, span_pos_cols, :].squeeze(1) # [batch*vocab]
+        joint_proba = prev_proba + cand_proba # batch*vocab
+        joint_proba = joint_proba.unsqueeze(1) 
+        return joint_proba
+    
+
+    def _get_next_topk_proba_and_words(self, joint_proba: torch.Tensor, beam_topk: int):
+        """
+        Determine the proba and token of next top-k candidates based on the joint probability
+
+        @param joint_proba: joint probability [batch*k*vocab]
+        @param beam_topk: number of frontiers to select
+        
+        @return next_topk_log_prob: the joint probabilities of the next top-k candidates # [batch*k]
+        @return vocab_indices: the chosen token of the next top-k candidates # [batch*k] 
+        @return prefix_indices: the chosen n-gram prefix of the next top-k candidates # [batch*k] 
+        """
+
+        vocab_size = joint_proba.shape[-1]
+        joint_proba = joint_proba.view(joint_proba.shape[0], -1) # [batch*(k*vocab)
+        next_topk_log_prob, next_topk_indices = joint_proba.topk(beam_topk, sorted=True) # [batch*k], [batch*k]
+        prefix_indices, vocab_indices = next_topk_indices//vocab_size, next_topk_indices%vocab_size # indices of the prefix candidates, indices of the vocab
+        prefix_indices = prefix_indices.cpu()
+        return next_topk_log_prob, vocab_indices, prefix_indices
+
+
+    def _update_topk_ngrams(self, new_indices: np.array, prefix_ngrams: np.array, next_token: np.array, batch_idx: int):
+        """
+        Update the topk frontier
+
+        @param new_indices: topk tokens that we want to update [batch*k*span_length]
+        @param prefix_ngrams: chosen prefix for topk [k*span_length-1]
+        @param next_token: next token for top-k [k*1]
+        @param batch_idx: position of instance within batch
+        """
+        # for each instance, update the top-k frontier n-grams
+        new_indices[batch_idx, :, :-1] = prefix_ngrams
+        new_indices[batch_idx, :, -1] = next_token
+
+    def _add_topk_indices_log_prob_to_batch(self, batch_rank_preds: List[Dict[str, float]]
+                                            , new_indices: np.array, next_topk_log_prob: np.array, batch_idx: int, span_length: int):
+        """
+        Add current top-k log probabilites and ngram into the list of predictions for current batch
+
+        @param batch_rank_preds: all top-k ngrams along with their probabilites
+        @param new_indices: ngram of topk [batch_size, k, span_length]
+        @param next_topk_log_prob: probabilites of each topk [batch_size, k, 1]
+        @param span_length: span length for current iteration
+        """
+        topk_indices_instance = new_indices[batch_idx]
+        topk_log_prob_instance = next_topk_log_prob[batch_idx]
+        for curr_topk_log_prob, curr_topk_token_idx in zip(topk_log_prob_instance, topk_indices_instance):
+            vocab_ids = curr_topk_token_idx.type(torch.LongTensor)
+            decoded_word = self.tokenizer.batch_decode(vocab_ids)
+            decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)]) # add id besides the token to distinghuish token
+            batch_rank_preds[batch_idx][decoded_word] = curr_topk_log_prob.item()/(span_length+1) # normalize with length
+
+    def _beam_search(self, mono_outputs: torch.Tensor, cs_outputs: torch.Tensor
+                     , label_token_lengths: List[int], obj_token_lengths: List[int]
+                     , batch_sz: int, beam_topk: int, ranking_topk: int
+                     , mono_rank_preds: List[List[str]], cs_rank_preds: List[List[str]]): 
+        """"
+        Do beam search for one batch
+
+        @param mono_outputs: output logits from the monolingual input [batch_size*seq_length*vocab]
+        @param cs_outputs: output logits from the codemixed input [batch_size*seq_length*vocab]
+        @param label_token_lengths: length of each object entity (including the sentinel tokens)
+        @param obj_token_lengths: length of each object entity (excluding the sentinel tokens)
+        @param batch_sz: batch size
+        @param beam_topk: beam search width
+        @param ranking_topk: number of candidates selected for final prediction
+        @param mono_rank_preds: final top-k predictions for all monolingual inputs
+        @param cs_rank_preds: final top-k predictions for all codemixed inputs
+        """
+
+        # get mask token position indices
+        mono_masked_indices, mono_masked_start_idx, mono_masked_current_idx, mono_masked_batch_indices = self._get_necessary_mask_positions(mono_outputs, label_token_lengths, obj_token_lengths)
+        cs_masked_indices, cs_masked_start_idx, cs_masked_current_idx, cs_masked_batch_indices = self._get_necessary_mask_positions(cs_outputs, label_token_lengths, obj_token_lengths)
+        
+        max_obj_token_len = max(obj_token_lengths)
+
+        mono_log_probs = torch.log(mono_outputs.softmax(dim=-1)) # [batch_size*seq_length*vocab]
+        cs_log_probs = torch.log(cs_outputs.softmax(dim=-1)) # [batch_size*seq_length*vocab]
+
+        mono_masked_rows = np.array(mono_masked_batch_indices)[..., np.newaxis]
+        mono_masked_current_cols = np.array(mono_masked_start_idx)[..., np.newaxis]
+
+        cs_masked_rows = np.array(cs_masked_batch_indices)[..., np.newaxis]
+        cs_masked_current_cols = np.array(cs_masked_current_idx)[..., np.newaxis]
+
+        mono_topk_log_prob, mono_topk_indices = mono_log_probs.topk(beam_topk, sorted=True) # [batch_size*seq_length*k], [batch_size*seq_length*k] 
+        cs_topk_log_prob, cs_topk_indices = cs_log_probs.topk(beam_topk, sorted=True) # [batch_size*seq_length*k], [batch_size*seq_length*k] 
+
+        mono_topk_log_prob, mono_topk_indices = mono_topk_log_prob[mono_masked_rows, mono_masked_current_cols, :], mono_topk_indices[mono_masked_rows, mono_masked_current_cols, :] # [bach*1*k], [bach*1*k] 
+        cs_topk_log_prob, cs_topk_indices = cs_topk_log_prob[cs_masked_rows, cs_masked_current_cols, :], cs_topk_indices[cs_masked_rows, cs_masked_current_cols, :] # [bach*1*k], [bach*1*k]
+
+        mono_batch_rank_preds = []
+        cs_batch_rank_preds = []
+        for _ in range(batch_sz):
+            mono_dict = dict()
+            cs_dict = dict()
+            mono_batch_rank_preds.append(mono_dict)
+            cs_batch_rank_preds.append(cs_dict)
+
+        for batch_idx in range(batch_sz):
+            mono_topk_log_prob_instance, mono_topk_indices_instance = mono_topk_log_prob[batch_idx][0], mono_topk_indices[batch_idx][0] # [k], [k]
+            cs_topk_log_prob_instance, cs_topk_indices_instance = cs_topk_log_prob[batch_idx][0], cs_topk_indices[batch_idx][0] # [k], [k]
+            
+            # collect all predictions for first object token
+            for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
+                decoded_word = self.tokenizer.decode(curr_mono_topk_token_idx)
+                decoded_word = f"{decoded_word}<{curr_mono_topk_token_idx}>"
+                mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()
+            
+            for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
+                decoded_word = self.tokenizer.decode(curr_cs_topk_token_idx)
+                decoded_word = f"{decoded_word}<{curr_cs_topk_token_idx}>"
+                cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob
+        
+        mono_topk_log_prob = mono_topk_log_prob.permute((2,0,1)) # [k*batch*1]
+        cs_topk_log_prob = cs_topk_log_prob.permute((2,0,1)) # [k*batch*1]
+
+        mono_topk_indices = mono_topk_indices.permute((2,0,1)).type(torch.LongTensor)
+        cs_topk_indices = cs_topk_indices.permute((2,0,1)).type(torch.LongTensor)       
+
+        
+        for span_len in range(1, max_obj_token_len):
+            # set span indices
+            for batch_idx in range(batch_sz):
+                if obj_token_lengths[batch_idx] >= (span_len+1): # this means that this instance still has some object token to predict
+                    mono_masked_current_cols[batch_idx][0] += 1
+                    cs_masked_current_cols[batch_idx][0] += 1
+
+
+            all_mono_joint_proba = []
+            all_cs_joint_proba = []
+            for cand_rank in range(len(mono_topk_log_prob)): 
+                mono_joint_proba = self._calculate_joint_proba(mono_log_probs, mono_masked_rows, mono_masked_current_cols, mono_topk_log_prob[cand_rank])   
+                all_mono_joint_proba.append(mono_joint_proba)
+
+                cs_joint_proba = self._calculate_joint_proba(cs_log_probs, cs_masked_rows, cs_masked_current_cols, cs_topk_log_prob[cand_rank])
+                all_cs_joint_proba.append(cs_joint_proba)
+            
+            all_mono_joint_proba = torch.cat(all_mono_joint_proba, dim=1) # batch*k*vocab
+            all_cs_joint_proba = torch.cat(all_cs_joint_proba, dim=1) # batch*k*vocab
+
+            next_mono_topk_log_prob, vocab_indices_mono, prefix_indices_mono = self._get_next_topk_proba_and_words(
+                all_mono_joint_proba, beam_topk
+            )
+            next_cs_topk_log_prob, vocab_indices_cs, prefix_indices_cs = self._get_next_topk_proba_and_words(
+                all_mono_joint_proba, beam_topk
+            )
+
+            new_mono_indices = torch.zeros((batch_sz, len(mono_topk_log_prob), span_len+1)) # batch*k*len
+            new_cs_indices = torch.zeros((batch_sz, len(cs_topk_log_prob), span_len+1))
+
+            mono_topk_indices = mono_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
+            cs_topk_indices = cs_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
+            
+            for batch_idx in range(batch_sz):
+                self._update_topk_ngrams(new_mono_indices, mono_topk_indices[batch_idx][prefix_indices_mono[batch_idx]], vocab_indices_mono[batch_idx], batch_idx)
+                self._update_topk_ngrams(new_cs_indices, cs_topk_indices[batch_idx][prefix_indices_cs[batch_idx]], vocab_indices_cs[batch_idx], batch_idx)
+
+                if obj_token_lengths[batch_idx] >= (span_len+1):
+                    self._add_topk_indices_log_prob_to_batch(mono_batch_rank_preds, new_mono_indices, next_mono_topk_log_prob, batch_idx, span_len)
+                    self._add_topk_indices_log_prob_to_batch(cs_batch_rank_preds, new_cs_indices, next_cs_topk_log_prob, batch_idx, span_len)
+
+            cs_topk_indices = new_cs_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
+            mono_topk_indices = new_mono_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
+
+            mono_topk_log_prob = next_mono_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
+            cs_topk_log_prob = next_cs_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
+        
+        # rank all preds
+        for batch_preds in mono_batch_rank_preds:
+            sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
+            selected_words = sorted_batch_preds[:ranking_topk]
+            mono_rank_preds.append(selected_words)
+        
+        for batch_preds in cs_batch_rank_preds:
+            sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
+            selected_words = sorted_batch_preds[:ranking_topk]
+            cs_rank_preds.append(selected_words)
+
+    def inference_cloze_task(self, instances: List[Dict], batch_size: int = 16, selected_layers: List[int] = [], beam_topk: int = 5, ranking_topk: int = 5)  -> [Union[List[Dict[str, float]], Dict[int, List[Dict[str, float]]]], Union[List[Dict[str, float]], Dict[int, List[Dict[str, float]]]], List[str]]:
+        """
+        Do inference for fill-in-the-blank task using beam search
+
+        @param instances: all instances
+        @param batch_size: number of instances in a batch
+        @param selected_layers: layer indices that we want to analyze
+        @param beam_topk: beam search width
+        @param ranking_topk: number of candidates selected for final prediction
+
+        @return mono_rank_preds: list of top-k predictions on all monolingual inputs just from last layer 
+        @return cs_rank_preds: list of top-k predictions on all codemixed inputs just from last layer
+        @return mono_rank_preds_per_layer: list of top-k predictions on all monolingual inputs from selected layers
+        @return cs_rank_preds_per_layer: list of top-k predictions on all codemixed inputs just from selected layers
+        @return labels: list of ground truth labels
+        """
+
         self.model.eval()
         mono_rank_preds, cs_rank_preds = [], []
         mono_rank_preds_per_layer, cs_rank_preds_per_layer = dict(), dict()
@@ -1183,7 +1383,6 @@ class DecoderLensWrapper:
             mono_rank_preds_per_layer[layer] = []
             cs_rank_preds_per_layer[layer] = []
 
-
         with torch.no_grad():
             for i in tqdm(range(0, batch_cnt)):
                 batch = instances[i*batch_size:min(len(instances), (i+1)*batch_size)]
@@ -1191,7 +1390,9 @@ class DecoderLensWrapper:
                 labels.extend(obj_labels)
                 mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']) for instance in batch]
                 cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']) for instance in batch]
-                all_obj_tokens, all_label_tokens, obj_token_lengths, label_token_lengths, all_attn_masks = self._tokenize_obj(obj_labels)
+                _, all_label_tokens, obj_token_lengths, label_token_lengths, all_attn_masks = self._tokenize_obj(obj_labels)
+                
+                # replace default mask token with single sentinel token
                 mono_prompts = self._mask_sentences(mono_prompts)
                 cs_prompts = self._mask_sentences(cs_prompts)
                 
@@ -1200,197 +1401,22 @@ class DecoderLensWrapper:
                
                 all_label_tokens = torch.Tensor(all_label_tokens).to('cuda').long()
                 all_attn_masks = torch.Tensor(all_attn_masks).to('cuda').long()
+                
                 mono_input_ids = mono_inputs['input_ids']
                 cs_input_ids = cs_inputs['input_ids']
+                
+                batch_sz = len(batch)
 
+                # only obtains the prediction from last layer
                 if len(selected_layers) == 0 or -1 in selected_layers:
                     mono_outputs = self.model(input_ids=mono_input_ids, labels=all_label_tokens)
-                    mono_outputs = mono_outputs.logits
-                    mono_masked_indices = []
-                    mono_masked_start_idx = []
-                    mono_masked_current_idx = []
-                    mono_masked_batch_indices = []
-
-                    for idx, mono_output in enumerate(mono_outputs):
-                        mono_masked_indices.append(list(range(mono_output.size()[1]))[1:-2-(mono_output.size()[1]-label_token_lengths[idx])])
-                        mono_masked_start_idx.append(min(mono_masked_indices[idx]))
-                        mono_masked_current_idx.append(min(mono_masked_indices[idx]))
-                        mono_masked_batch_indices.append(idx)
-                        assert len(mono_masked_indices[idx]) == obj_token_lengths[idx]
-
+                    mono_outputs = mono_outputs.logits # [batch_size*seq_length*vocab]
                     
                     cs_outputs = self.model(input_ids=cs_input_ids, labels=all_label_tokens)
-                    cs_outputs = cs_outputs.logits
-                    cs_masked_indices = [] # batch_size*l(l: length_mask & varies
-                    cs_masked_start_idx = []
-                    cs_masked_current_idx = []
-                    cs_masked_batch_indices = []
+                    cs_outputs = cs_outputs.logits # [batch_size*seq_length*vocab]
                     
-                    max_obj_token_len = max(obj_token_lengths)
-                    for idx, cs_output in enumerate(cs_outputs):
-                        cs_masked_indices.append(list(range(cs_output.size()[1]))[1:-2-(cs_output.size()[1]-label_token_lengths[idx])])
-                        cs_masked_start_idx.append(min(cs_masked_indices[idx]))
-                        cs_masked_current_idx.append(min(cs_masked_indices[idx]))
-                        cs_masked_batch_indices.append(idx)
-                        assert len(cs_masked_indices[idx]) == obj_token_lengths[idx]
-
-                    mono_log_probs = torch.log(mono_outputs.softmax(dim=-1))
-                    cs_log_probs = torch.log(cs_outputs.softmax(dim=-1))
-
-                    mono_masked_rows = np.array(mono_masked_batch_indices)[..., np.newaxis] 
-                    mono_masked_current_cols = np.array(mono_masked_start_idx)[..., np.newaxis]
-                    cs_masked_rows = np.array(cs_masked_batch_indices)[..., np.newaxis]
-                    cs_masked_current_cols = np.array(cs_masked_current_idx)[..., np.newaxis]
-
-                    batch_sz = len(batch)
-
-                    
-                    mono_topk_log_prob, mono_topk_indices = mono_log_probs.topk(beam_topk, sorted=True) # indices return indices in vocabulary batch_size x seq_length x topk
-                    cs_topk_log_prob, cs_topk_indices = cs_log_probs.topk(beam_topk, sorted=True) # batch_size x seq_length x topk
-
-                    mono_topk_log_prob, mono_topk_indices = mono_topk_log_prob[mono_masked_rows, mono_masked_current_cols, :], mono_topk_indices[mono_masked_rows, mono_masked_current_cols, :] # bach*1*k
-                    cs_topk_log_prob, cs_topk_indices = cs_topk_log_prob[cs_masked_rows, cs_masked_current_cols, :], cs_topk_indices[cs_masked_rows, cs_masked_current_cols, :]
- 
-
-                    mono_batch_rank_preds = []
-                    cs_batch_rank_preds = []
-                    for _ in range(batch_sz):
-                        mono_dict = dict()
-                        cs_dict = dict()
-                        mono_batch_rank_preds.append(mono_dict)
-                        cs_batch_rank_preds.append(cs_dict)
-
-                    for batch_idx in range(batch_sz):
-                        mono_topk_log_prob_instance, mono_topk_indices_instance = mono_topk_log_prob[batch_idx][0], mono_topk_indices[batch_idx][0]
-                        cs_topk_log_prob_instance, cs_topk_indices_instance = cs_topk_log_prob[batch_idx][0], cs_topk_indices[batch_idx][0]
-                        
-                        for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
-                            decoded_word = self.tokenizer.decode(curr_mono_topk_token_idx)
-                            decoded_word = f"{decoded_word}<{curr_mono_topk_token_idx}>"
-                            mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()
-                        
-                        for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
-                            decoded_word = self.tokenizer.decode(curr_cs_topk_token_idx)
-                            decoded_word = f"{decoded_word}<{curr_cs_topk_token_idx}>"
-                            cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob
-                    
-                    mono_topk_log_prob = mono_topk_log_prob.permute((2,0,1))
-                    cs_topk_log_prob = cs_topk_log_prob.permute((2,0,1))
-
-                    mono_topk_indices = mono_topk_indices.permute((2,0,1)).type(torch.LongTensor)
-                    cs_topk_indices = cs_topk_indices.permute((2,0,1)).type(torch.LongTensor)       
-
-                    
-                    for span_len in range(1, max_obj_token_len):
-                        mono_span_pos_rows = []
-                        mono_span_pos_cols = []
-
-                        cs_span_pos_rows = []
-                        cs_span_pos_cols = []
-
-                        selected_mono_topk_indices = []
-                        selected_cs_topk_indices = []
-
-                        mono_span_pos = np.zeros((batch_sz, span_len))
-                        cs_span_pos = np.zeros((batch_sz, span_len))
-                        
-                        
-                        # set span indices
-                        for batch_idx in range(batch_sz):
-                            if obj_token_lengths[batch_idx] >= (span_len+1):
-                                mono_masked_current_cols[batch_idx][0] += 1
-                                cs_masked_current_cols[batch_idx][0] += 1
-
-
-                        all_mono_joint_proba = []
-                        all_cs_joint_proba = []
-                        for cand_rank in range(len(mono_topk_log_prob)):    
-                            mono_cand_proba = mono_log_probs[mono_masked_rows, mono_masked_current_cols, :].squeeze(1) #batch*1*vocab
-                            cs_cand_proba = cs_log_probs[mono_masked_rows, mono_masked_current_cols, :].squeeze(1)
-
-                            mono_prev_proba = mono_topk_log_prob[cand_rank] # batch*1
-                            cs_prev_proba = cs_topk_log_prob[cand_rank] # batch*1
-
-
-                            mono_joint_proba = mono_prev_proba + mono_cand_proba # batch*vocab
-                            mono_joint_proba = mono_joint_proba.unsqueeze(1)
-                            all_mono_joint_proba.append(mono_joint_proba)
-                            cs_joint_proba = cs_prev_proba + cs_cand_proba # batch*vocab
-                            cs_joint_proba = cs_joint_proba.unsqueeze(1)
-                            all_cs_joint_proba.append(cs_joint_proba)
-
-                        
-                        all_mono_joint_proba = torch.cat(all_mono_joint_proba, dim=1) # batch*k*vocab
-                        all_cs_joint_proba = torch.cat(all_cs_joint_proba, dim=1) # batch*k*vocab
-
-                        
-                        vocab_size = all_cs_joint_proba.shape[-1]
-
-                        all_mono_joint_proba = all_mono_joint_proba.view(all_mono_joint_proba.shape[0], -1) #batch*(k*vocab)
-                        all_cs_joint_proba = all_cs_joint_proba.view(all_cs_joint_proba.shape[0], -1) #batch*(k*vocab)
-
-                        next_mono_topk_log_prob, next_mono_topk_indices = all_mono_joint_proba.topk(beam_topk, sorted=True) #batch*k
-                        prefix_indices_mono, vocab_indices_mono = next_mono_topk_indices//vocab_size, next_mono_topk_indices%vocab_size
-                        prefix_indices_mono = prefix_indices_mono.cpu()
-
-
-                        next_cs_topk_log_prob, next_cs_topk_indices = all_cs_joint_proba.topk(beam_topk, sorted=True)
-                        prefix_indices_cs, vocab_indices_cs = next_cs_topk_indices//vocab_size, next_cs_topk_indices%vocab_size
-                        prefix_indices_cs = prefix_indices_cs.cpu()
-
-                        new_mono_indices = torch.zeros((batch_sz, len(mono_topk_log_prob), span_len+1)) # batch*k*len
-                        new_cs_indices = torch.zeros((batch_sz, len(cs_topk_log_prob), span_len+1))
-
-                        mono_topk_indices = mono_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
-                        cs_topk_indices = cs_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
-                        
-
-                        for batch_idx in range(batch_sz):
-                            #
-                            new_mono_indices[batch_idx, :, :-1] = mono_topk_indices[batch_idx][prefix_indices_mono[batch_idx]]
-                            new_mono_indices[batch_idx, :, -1] = vocab_indices_mono[batch_idx]
-                            
-                            new_cs_indices[batch_idx, :, :-1] = cs_topk_indices[batch_idx][prefix_indices_cs[batch_idx]]
-
-                            new_cs_indices[batch_idx, :, -1] =  vocab_indices_cs[batch_idx]
-
-                            if obj_token_lengths[batch_idx] >= (span_len+1):
-                                mono_topk_indices_instance = new_mono_indices[batch_idx]
-                                mono_topk_log_prob_instance = next_mono_topk_log_prob[batch_idx]
-                                for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
-                                    vocab_ids = curr_mono_topk_token_idx.type(torch.LongTensor)
-                                    decoded_word =  self.tokenizer.batch_decode(vocab_ids)
-                                    decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)])
-                                    mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()/(span_len+1)
-                        
-                                cs_topk_indices_instance = new_cs_indices[batch_idx]
-                                cs_topk_log_prob_instance = next_cs_topk_log_prob[batch_idx]
-                                for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
-                                    vocab_ids = curr_cs_topk_token_idx.type(torch.LongTensor)
-                                    decoded_word =  self.tokenizer.batch_decode(vocab_ids)
-                                    decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)])
-                                    cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob.item()/(span_len+1)
-
-                                
-                        
-    
-                        cs_topk_indices = new_cs_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
-                        mono_topk_indices = new_mono_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
-
-                        mono_topk_log_prob = next_mono_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
-                        cs_topk_log_prob = next_cs_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
-
-                    
-                    # rank all preds
-                    for batch_preds in mono_batch_rank_preds:
-                        sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
-                        selected_words = sorted_batch_preds[:ranking_topk]
-                        mono_rank_preds.append(selected_words)
-                    
-                    for batch_preds in cs_batch_rank_preds:
-                        sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
-                        selected_words = sorted_batch_preds[:ranking_topk]
-                        cs_rank_preds.append(selected_words)
+                    self._beam_search(mono_outputs, cs_outputs, label_token_lengths, obj_token_lengths,
+                                      batch_sz, beam_topk, ranking_topk, mono_rank_preds, cs_rank_preds)
                     
                 else:
                     _, mono_enc_hidden_states, _ = self.get_encoder_outputs(mono_inputs)
@@ -1421,187 +1447,8 @@ class DecoderLensWrapper:
                         mono_outputs = self.model.lm_head(mono_outputs)
                         cs_outputs = self.model.lm_head(cs_outputs)
 
-                        mono_masked_indices = []
-                        mono_masked_start_idx = []
-                        mono_masked_current_idx = []
-                        mono_masked_batch_indices = []
-
-                        for idx, mono_output in enumerate(mono_outputs):
-                            mono_masked_indices.append(list(range(mono_output.size()[1]))[1:-2-(mono_output.size()[1]-label_token_lengths[idx])])
-                            mono_masked_start_idx.append(min(mono_masked_indices[idx]))
-                            mono_masked_current_idx.append(min(mono_masked_indices[idx]))
-                            mono_masked_batch_indices.append(idx)
-                            assert len(mono_masked_indices[idx]) == obj_token_lengths[idx]
-
-                    
-                        cs_masked_indices = [] # batch_size*l(l: length_mask & varies
-                        cs_masked_start_idx = []
-                        cs_masked_current_idx = []
-                        cs_masked_batch_indices = []
-                    
-                        max_obj_token_len = max(obj_token_lengths)
-                        for idx, cs_output in enumerate(cs_outputs):
-                            cs_masked_indices.append(list(range(cs_output.size()[1]))[1:-2-(cs_output.size()[1]-label_token_lengths[idx])])
-                            cs_masked_start_idx.append(min(cs_masked_indices[idx]))
-                            cs_masked_current_idx.append(min(cs_masked_indices[idx]))
-                            cs_masked_batch_indices.append(idx)
-                            assert len(cs_masked_indices[idx]) == obj_token_lengths[idx]
-
-                        mono_log_probs = torch.log(mono_outputs.softmax(dim=-1))
-                        cs_log_probs = torch.log(cs_outputs.softmax(dim=-1))
-
-                        mono_masked_rows = np.array(mono_masked_batch_indices)[..., np.newaxis] 
-                        mono_masked_current_cols = np.array(mono_masked_start_idx)[..., np.newaxis]
-                        cs_masked_rows = np.array(cs_masked_batch_indices)[..., np.newaxis]
-                        cs_masked_current_cols = np.array(cs_masked_current_idx)[..., np.newaxis]
-
-                        batch_sz = len(batch)
-
-                    
-                        mono_topk_log_prob, mono_topk_indices = mono_log_probs.topk(beam_topk, sorted=True) # indices return indices in vocabulary batch_size x seq_length x topk
-                        cs_topk_log_prob, cs_topk_indices = cs_log_probs.topk(beam_topk, sorted=True) # batch_size x seq_length x topk
-
-
-                        mono_topk_log_prob, mono_topk_indices = mono_topk_log_prob[mono_masked_rows, mono_masked_current_cols, :], mono_topk_indices[mono_masked_rows, mono_masked_current_cols, :] # bach*1*k
-                        cs_topk_log_prob, cs_topk_indices = cs_topk_log_prob[cs_masked_rows, cs_masked_current_cols, :], cs_topk_indices[cs_masked_rows, cs_masked_current_cols, :]
-
-
-
-                        mono_batch_rank_preds = []
-                        cs_batch_rank_preds = []
-                        for _ in range(batch_sz):
-                            mono_dict = dict()
-                            cs_dict = dict()
-                            mono_batch_rank_preds.append(mono_dict)
-                            cs_batch_rank_preds.append(cs_dict)
-
-                        for batch_idx in range(batch_sz):
-                            mono_topk_log_prob_instance, mono_topk_indices_instance = mono_topk_log_prob[batch_idx][0], mono_topk_indices[batch_idx][0]
-                            cs_topk_log_prob_instance, cs_topk_indices_instance = cs_topk_log_prob[batch_idx][0], cs_topk_indices[batch_idx][0]
-                            
-                            for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
-                                decoded_word = self.tokenizer.decode(curr_mono_topk_token_idx)
-                                
-                                mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob
-                            
-                            for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
-                                decoded_word = self.tokenizer.decode(curr_cs_topk_token_idx)
-                                cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob
-                    
-                        mono_topk_log_prob = mono_topk_log_prob.permute((2,0,1))
-                        cs_topk_log_prob = cs_topk_log_prob.permute((2,0,1))
-
-
-                        mono_topk_indices = mono_topk_indices.permute((2,0,1)).type(torch.LongTensor)
-                        cs_topk_indices = cs_topk_indices.permute((2,0,1)).type(torch.LongTensor)
-                    
-                        for span_len in range(1, max_obj_token_len):
-                            mono_span_pos_rows = []
-                            mono_span_pos_cols = []
-
-                            cs_span_pos_rows = []
-                            cs_span_pos_cols = []
-
-
-                            mono_span_pos = np.zeros((batch_sz, span_len))
-                            cs_span_pos = np.zeros((batch_sz, span_len))
-                            
-                            
-                            # set span indices
-                            for batch_idx in range(batch_sz):
-                                if obj_token_lengths[batch_idx] >= (span_len+1):
-                                    mono_masked_current_cols[batch_idx][0] += 1
-                                    cs_masked_current_cols[batch_idx][0] += 1
-
-                            
-
-                            all_mono_joint_proba = []
-                            all_cs_joint_proba = []
-                            for cand_rank in range(len(mono_topk_log_prob)):    
-                                mono_cand_proba = mono_log_probs[mono_masked_rows, mono_masked_current_cols, :].squeeze(1) #batch*1*vocab
-                                cs_cand_proba = cs_log_probs[mono_masked_rows, mono_masked_current_cols, :].squeeze(1)
-
-                                mono_prev_proba = mono_topk_log_prob[cand_rank] # batch*1
-                                cs_prev_proba = cs_topk_log_prob[cand_rank] # batch*1
-
-
-                                mono_joint_proba = mono_prev_proba + mono_cand_proba # batch*vocab
-                                mono_joint_proba = mono_joint_proba.unsqueeze(1)
-                                all_mono_joint_proba.append(mono_joint_proba)
-                                cs_joint_proba = cs_prev_proba + cs_cand_proba # batch*vocab
-                                cs_joint_proba = cs_joint_proba.unsqueeze(1)
-                                all_cs_joint_proba.append(cs_joint_proba)
-                            
-                            all_mono_joint_proba = torch.cat(all_mono_joint_proba, dim=1) # batch*k*vocab
-                            all_cs_joint_proba = torch.cat(all_cs_joint_proba, dim=1) # batch*k*vocab
-                            
-                            vocab_size = all_cs_joint_proba.shape[-1]
-
-                            all_mono_joint_proba = all_mono_joint_proba.view(all_mono_joint_proba.shape[0], -1) #batch*(k*vocab)
-                            all_cs_joint_proba = all_cs_joint_proba.view(all_cs_joint_proba.shape[0], -1) #batch*(k*vocab)
-
-                            next_mono_topk_log_prob, next_mono_topk_indices = all_mono_joint_proba.topk(beam_topk, sorted=True) #batch*k
-                            prefix_indices_mono, vocab_indices_mono = next_mono_topk_indices//vocab_size, next_mono_topk_indices%vocab_size
-                            prefix_indices_mono = prefix_indices_mono.cpu()
-
-
-                            next_cs_topk_log_prob, next_cs_topk_indices = all_cs_joint_proba.topk(beam_topk, sorted=True)
-                            prefix_indices_cs, vocab_indices_cs = next_cs_topk_indices//vocab_size, next_cs_topk_indices%vocab_size
-                            prefix_indices_cs = prefix_indices_cs.cpu()
-
-                            new_mono_indices = torch.zeros((batch_sz, len(mono_topk_log_prob), span_len+1)) # batch*k*len
-                            new_cs_indices = torch.zeros((batch_sz, len(cs_topk_log_prob), span_len+1))
-
-                            mono_topk_indices = mono_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
-                            cs_topk_indices= cs_topk_indices.permute((1,0,2)).to('cpu') #batch*k*1
-
-                            for batch_idx in range(batch_sz):
-                                
-                                new_mono_indices[batch_idx, :, :-1] = mono_topk_indices[batch_idx][prefix_indices_mono[batch_idx]]
-                                new_mono_indices[batch_idx, :, -1] = vocab_indices_mono[batch_idx]
-
-                                new_cs_indices[batch_idx, :, :-1] = cs_topk_indices[batch_idx][prefix_indices_cs[batch_idx]]
-                                new_cs_indices[batch_idx, :, -1] =  vocab_indices_cs[batch_idx]
-
-                                if obj_token_lengths[batch_idx] >= (span_len+1):
-                                    mono_topk_indices_instance = new_mono_indices[batch_idx]
-                                    mono_topk_log_prob_instance = next_mono_topk_log_prob[batch_idx]
-                                    for curr_mono_topk_log_prob, curr_mono_topk_token_idx in zip(mono_topk_log_prob_instance, mono_topk_indices_instance):
-                                        vocab_ids = curr_mono_topk_token_idx.type(torch.LongTensor)
-                                        decoded_word =  self.tokenizer.batch_decode(vocab_ids)
-                                        decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)])
-                                        #
-                                        mono_batch_rank_preds[batch_idx][decoded_word] = curr_mono_topk_log_prob.item()/(span_len+1)
-                            
-                                    cs_topk_indices_instance = new_cs_indices[batch_idx]
-                                    cs_topk_log_prob_instance = next_cs_topk_log_prob[batch_idx]
-                                    for curr_cs_topk_log_prob, curr_cs_topk_token_idx in zip(cs_topk_log_prob_instance, cs_topk_indices_instance):
-                                        vocab_ids = curr_cs_topk_token_idx.type(torch.LongTensor)
-                                        decoded_word =  self.tokenizer.batch_decode(vocab_ids)
-                                        decoded_word = " ".join([f"{word}<{vocab_id}>" for word, vocab_id in zip(decoded_word, vocab_ids)])
-                                        #
-                                        cs_batch_rank_preds[batch_idx][decoded_word] = curr_cs_topk_log_prob.item()/(span_len+1)
-                            
-                            cs_topk_indices = new_cs_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
-                            mono_topk_indices = new_mono_indices.permute((1,0,2)).type(torch.LongTensor) #k*batch*len
-
-                            mono_topk_log_prob = next_mono_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
-                            cs_topk_log_prob = next_cs_topk_log_prob.permute((1,0)).unsqueeze(-1) # k*batch*1
-                        
-                        # rank all preds
-                        for batch_preds in mono_batch_rank_preds:
-                            sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
-                            selected_words = sorted_batch_preds[:ranking_topk]
-                            mono_rank_preds_per_layer[layer].append(selected_words)
-                       
-                        
-                        for batch_preds in cs_batch_rank_preds:
-                            sorted_batch_preds = sorted(batch_preds, key=batch_preds.get, reverse=True)
-                            selected_words = sorted_batch_preds[:ranking_topk]
-                            cs_rank_preds_per_layer[layer].append(selected_words)
-                        
-                        
-                        
+                        self._beam_search(mono_outputs, cs_outputs, label_token_lengths, obj_token_lengths, batch_sz, beam_topk, ranking_topk, mono_rank_preds_per_layer[layer], cs_rank_preds_per_layer[layer])
+                          
         if len(selected_layers) == 0 or -1 in selected_layers:
             return mono_rank_preds, cs_rank_preds, labels
        
