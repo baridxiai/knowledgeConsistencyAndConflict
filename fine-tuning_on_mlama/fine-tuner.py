@@ -27,9 +27,9 @@ def tokenize_wiki_examples(examples, tokenizer):
     return tokenizer(examples["text"], padding=True,  truncation=True)
 def load_training_validation_dataset(tokenizer):
     #  mlama 53 is sorted in order of statements.
-    m_lama = load_dataset("parquet", data_files="./mlama53.parquet")
+    m_lama = load_dataset("parquet", data_files="./mlama53.parquet")["train"]
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-    tokenized_train = m_lama.map(lambda examples: tokenize_mlama_examples(examples, tokenizer), batched=False,remove_columns=m_lama.column_names)
+    tokenized_train = m_lama.map(lambda examples: tokenize_mlama_examples(examples, tokenizer), batched=False,remove_columns=m_lama.column_names).to_iterable_dataset().batch(batch_size=53)
     tokenized_val = val_dataset.map(lambda examples: tokenize_wiki_examples(examples, tokenizer), batched=True,remove_columns=val_dataset.column_names)
 
     return tokenized_train, tokenized_val
@@ -57,7 +57,6 @@ def train(args):
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        callbacks=[early_stopping]
     )
     trainer.train()
 

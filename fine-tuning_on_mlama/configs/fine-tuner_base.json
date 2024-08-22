@@ -1,6 +1,6 @@
 {
     "output_dir":"./model_checkpoint_finetuner",
-    "per_device_train_batch_size":53,
+    "per_device_train_batch_size":1,
     "per_gpu_eval_batch_size":30,
     "overwrite_output_dir":true,
     "num_train_epochs":1,
