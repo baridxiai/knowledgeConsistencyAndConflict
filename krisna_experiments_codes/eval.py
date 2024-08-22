@@ -1,7 +1,5 @@
-import evaluate
 import numpy as np
 from sentence_transformers import SentenceTransformer
-import pdb
 from tqdm import tqdm
 import collections, re, string
 
@@ -227,9 +225,6 @@ def compute_rankc(preds1, preds2):
     
     return consistent_sum/len(preds1)
 
-
-
-
 def compute_mrr(preds, gts):
     all_ranks = []
     for pred_cands, gt in zip(preds, gts):
@@ -242,3 +237,13 @@ def compute_mrr(preds, gts):
         all_ranks.append(rank)
     return sum(all_ranks)/len(all_ranks)
 
+
+def compute_accuracy_top_n(preds1, preds2, n=1):
+    acc_avg = 0
+    for rank_pred1, rank_pred2 in zip(preds1, preds2):
+        rank_pred1 = rank_pred1[:n]
+        rank_pred2 = rank_pred2[:n]
+        correct_cnt = [pred_word1==pred_word2 for pred_word1, pred_word2 in zip(rank_pred1, rank_pred2)]
+        instance_acc = sum(correct_cnt)/len(correct_cnt)
+        acc_avg += instance_acc
+    return acc_avg/len(preds1)

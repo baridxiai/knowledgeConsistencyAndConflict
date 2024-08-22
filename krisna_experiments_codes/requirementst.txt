@@ -1,0 +1,8 @@
+torch
+transformers
+sentence_transformers
+datasets
+scipy
+plotly-express
+matplotlib
+numpy
