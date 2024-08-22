@@ -30,7 +30,7 @@ def load_training_validation_dataset(tokenizer):
     df = pd.read_parquet("./mlama53.parquet", engine="fastparquet")
     m_lama = Dataset.from_pandas(df)
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-    tokenized_train = m_lama.map(lambda examples: tokenize_mlama_examples(examples, tokenizer), batched=False,remove_columns=df.columns.values).batch(batch_size=53)
+    tokenized_train = m_lama.map(lambda examples: tokenize_mlama_examples(examples, tokenizer), batched=False,remove_columns=df.columns.values.tolist()).batch(batch_size=53)
     tokenized_val = val_dataset.map(lambda examples: tokenize_wiki_examples(examples, tokenizer), batched=True,remove_columns=["text"])
 
     return tokenized_train, tokenized_val
