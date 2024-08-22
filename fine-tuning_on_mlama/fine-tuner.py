@@ -10,6 +10,9 @@ from transformers import (
 )
 from datasets import Dataset,load_dataset
 import pandas as pd
+import torch
+import datetime
+torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
 
 # Training
 
