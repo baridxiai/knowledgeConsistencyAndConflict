@@ -21,6 +21,7 @@ def tokenize_examples(examples, tokenizer):
 
     return tokenizer(examples, padding="max_length")
 def load_training_validation_dataset(tokenizer):
+    #  mlama 53 is sorted in order of statements.
     df = pd.read_parquet("./mlama53.parquet", engine="fastparquet")
     m_lama = Dataset.from_pandas(df)
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
@@ -37,7 +38,7 @@ def load_training_arguments(data_file):
 
 def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    model = AutoModelForMaskedLM.from_pretrained(args.model_name, num_labels=3)
+    model = AutoModelForMaskedLM.from_pretrained(args.model_name)
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)
