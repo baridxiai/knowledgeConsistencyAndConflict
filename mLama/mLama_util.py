@@ -1,18 +1,11 @@
 # -*- coding: utf-8 -*-
 # code warrior: Barid
-import os
 
-# import tensorflow as tf
-from transformers import AutoTokenizer, AutoModel, XLMRobertaModel
 import torch
-import csv
 import numpy as np
 import datasets
 import sys
-from sklearn.decomposition import PCA
-from sklearn.decomposition import IncrementalPCA
-from sklearn import decomposition
-from numpy import save
+
 
 import torch
 

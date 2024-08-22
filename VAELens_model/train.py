@@ -7,6 +7,7 @@ import datasets
 import torch
 import numpy as np
 from mLama import mLama_util
+import random
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
 os.environ["NCCL_P2P_DISABLE"] = "1"
@@ -27,7 +28,7 @@ for data in m_lama:
     predicate_id, key, langauge, org, sub_label, obj_label = (
         mLama_util.m_lama_cross_robust_parser(data)
     )
-    if langauge in ["en"]:
+    if langauge in ["zh"]:
         v = [org, sub_label, obj_label, langauge, key, predicate_id]
         m_lama_organized.append(v)
 print(n)
@@ -64,8 +65,9 @@ def loss_fn(logits, label, mean, logv, anneal_function, step, k, x0):
     return NLL_loss, KL_loss, KL_weight
 
 
-while epoch < 5:
+while epoch < 10:
     epoch += 1
+    m_lama_organized = random.shuffle(m_lama_organized)
     for i in range(len(m_lama_organized)):
         step = step +  1
         batch = m_lama_organized[i * batch_size : (i + 1) * batch_size]
@@ -84,7 +86,7 @@ while epoch < 5:
         seq_rep = VAELens.seq_rep(layer_rep)
         logits, mean, logv, z = VAELens_model(seq_rep,output_rep)
         NLL_loss, KL_loss, KL_weight = loss_fn(
-            logits, label, mean, logv, "linear", step, 1, 500
+            logits, label, mean, logv, "linear", step, 1, 1000
         )
         loss = (NLL_loss + KL_weight * KL_loss) / batch_size
         adm_opt.zero_grad()
