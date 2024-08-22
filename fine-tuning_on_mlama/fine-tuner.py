@@ -13,20 +13,22 @@ import pandas as pd
 
 # Training
 
-def tokenize_examples(examples, tokenizer):
+def tokenize_mlama_examples(examples, tokenizer):
     obj_label = examples["obj_label"]
     sub_label = examples["sub_label"]
     template = examples["template"]
     examples = template.replace("[X]", sub_label).replace("[Y]", obj_label)
 
     return tokenizer(examples, padding="max_length")
+def tokenize_wiki_examples(examples, tokenizer):
+    return tokenizer(examples["text"], padding="max_length")
 def load_training_validation_dataset(tokenizer):
     #  mlama 53 is sorted in order of statements.
     df = pd.read_parquet("./mlama53.parquet", engine="fastparquet")
     m_lama = Dataset.from_pandas(df)
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-    tokenized_train = m_lama.map(lambda examples: tokenize_examples(examples, tokenizer), batched=False)
-    tokenized_val = val_dataset.map(lambda examples: tokenize_examples(examples, tokenizer), batched=True,remove_columns=["text"])
+    tokenized_train = m_lama.map(lambda examples: tokenize_mlama_examples(examples, tokenizer), batched=False)
+    tokenized_val = val_dataset.map(lambda examples: tokenize_wiki_examples(examples, tokenizer), batched=True,remove_columns=["text"])
 
     return tokenized_train, tokenized_val
 
