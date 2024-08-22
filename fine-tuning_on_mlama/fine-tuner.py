@@ -12,9 +12,6 @@ from datasets import Dataset,load_dataset
 import pandas as pd
 
 # Training
-df = pd.read_parquet("./train_300split.parquet", engine="fastparquet")
-org_dataset = Dataset.from_pandas(df)
-train_dataset = org_dataset.shuffle(seed=42)
 
 def tokenize_examples(examples, tokenizer):
     obj_label = examples["obj_label"]
