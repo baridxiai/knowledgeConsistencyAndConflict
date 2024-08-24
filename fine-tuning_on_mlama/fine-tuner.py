@@ -33,7 +33,7 @@ def load_training_validation_dataset(tokenizer):
     #  mlama 53 is sorted in order of statements.
     m_lama = load_dataset("parquet", data_files="./mlama53.parquet")["train"]
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-    tokenized_train = m_lama.map(lambda examples: tokenize_mlama_examples(examples, tokenizer), batched=False,remove_columns=m_lama.column_names).to_iterable_dataset().batch(batch_size=53)
+    tokenized_train = m_lama.map(lambda examples: tokenize_mlama_examples(examples, tokenizer), batched=False,remove_columns=m_lama.column_names)
     tokenized_val = val_dataset.map(lambda examples: tokenize_wiki_examples(examples, tokenizer), batched=True,remove_columns=val_dataset.column_names)
 
     return tokenized_train, tokenized_val
@@ -60,6 +60,7 @@ def group_by(d, col, join):
     # Return concatenation of all the joined groups
     return concatenate_datasets(groups.values())
 def non_shuffle(self):
+    self.train_dataset.shuffle()
     self.train_dataset = group_by(self.train_dataset)
     return SequentialSampler(self.train_dataset)
 def train(args):
@@ -72,7 +73,6 @@ def train(args):
     early_stopping = EarlyStoppingCallback(
         early_stopping_patience=5
     )
-    trainer._get_train_sampler =lambda: non_shuffle(trainer)
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -81,6 +81,7 @@ def train(args):
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
+    trainer._get_train_sampler =lambda: non_shuffle(trainer)
 
     trainer.train()
 
