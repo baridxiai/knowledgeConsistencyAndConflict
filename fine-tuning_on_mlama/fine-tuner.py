@@ -8,10 +8,12 @@ from transformers import (
     Trainer,
     AutoModelForMaskedLM,TrainingArguments,DataCollatorForLanguageModeling,EarlyStoppingCallback
 )
+from torch.utils.data import  SequentialSampler
 from datasets import Dataset,load_dataset
 import pandas as pd
 import torch
 import datetime
+from datasets import concatenate_datasets
 #torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
 
 # Training
@@ -20,9 +22,11 @@ def tokenize_mlama_examples(examples, tokenizer):
     obj_label = examples["obj_label"]
     sub_label = examples["sub_label"]
     template = examples["template"]
+    predicate_id = examples["predicate_id"][1:] ## omit prefix "P"
     examples = template.replace("[X]", sub_label).replace("[Y]", obj_label)
-
-    return tokenizer(examples, padding=True,  truncation=True)
+    tokens = tokenizer(examples, padding=True,  truncation=True)
+    tokens["predicate_id"] = [predicate_id]
+    return tokens
 def tokenize_wiki_examples(examples, tokenizer):
     return tokenizer(examples["text"], padding=True,  truncation=True)
 def load_training_validation_dataset(tokenizer):
@@ -39,7 +43,25 @@ def load_training_arguments(data_file):
         train_args = json.load(f)
     train_args = TrainingArguments(**train_args)
     return train_args
-
+def group_by(d, col, join):
+    """from: https://github.com/huggingface/datasets/issues/3644"""
+    # Get the indices of each group
+    groups = {key: [] for key in d.unique(col)}
+    def create_groups_indices(key, i):
+        groups[key].append(i)
+    d.map(create_groups_indices, with_indices=True, input_columns=col)
+    # Get one dataset object per group
+    groups = {key: d.select(indices) for key, indices in groups.items()}
+    # Apply join function
+    groups = {
+        key: d
+        for key, dataset_group in groups.items()
+    }
+    # Return concatenation of all the joined groups
+    return concatenate_datasets(groups.values())
+def non_shuffle(self):
+    self.train_dataset = group_by(self.train_dataset)
+    return SequentialSampler(self.train_dataset)
 def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForMaskedLM.from_pretrained(args.model_name)
@@ -50,6 +72,7 @@ def train(args):
     early_stopping = EarlyStoppingCallback(
         early_stopping_patience=5
     )
+    trainer._get_train_sampler =lambda: non_shuffle(trainer)
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -58,6 +81,7 @@ def train(args):
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
+
     trainer.train()
 
 
