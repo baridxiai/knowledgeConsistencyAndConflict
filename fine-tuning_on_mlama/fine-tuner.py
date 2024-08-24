@@ -22,10 +22,8 @@ def tokenize_mlama_examples(examples, tokenizer):
     obj_label = examples["obj_label"]
     sub_label = examples["sub_label"]
     template = examples["template"]
-    predicate_id = examples["predicate_id"][1:] ## omit prefix "P"
     examples = template.replace("[X]", sub_label).replace("[Y]", obj_label)
     tokens = tokenizer(examples, padding=True,  truncation=True)
-    tokens["predicate_id"] = [predicate_id]
     return tokens
 def tokenize_wiki_examples(examples, tokenizer):
     return tokenizer(examples["text"], padding=True,  truncation=True)
@@ -46,8 +44,9 @@ def load_training_arguments(data_file):
 def group_by_index_span(d, span):
     """from: https://github.com/huggingface/datasets/issues/3644"""
     # Get the indices of each group
+    groups = dict()
     for key in range(0, int(d.num_rows/span)):
-        groups = {key: [i for i in range(key * span, span)]}
+        groups[key] =[i for i in range(key * span, (key+1)*span)]
     keys =  list(groups.keys())
     random.shuffle(keys)
     groups = {key: groups[key] for key in keys}
