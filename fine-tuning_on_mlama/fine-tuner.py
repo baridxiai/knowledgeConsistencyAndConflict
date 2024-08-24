@@ -43,7 +43,7 @@ def load_training_arguments(data_file):
         train_args = json.load(f)
     train_args = TrainingArguments(**train_args)
     return train_args
-def group_by(d, col, join):
+def group_by(d, col):
     """from: https://github.com/huggingface/datasets/issues/3644"""
     # Get the indices of each group
     groups = {key: [] for key in d.unique(col)}
@@ -61,7 +61,7 @@ def group_by(d, col, join):
     return concatenate_datasets(groups.values())
 def non_shuffle(self):
     self.train_dataset.shuffle()
-    self.train_dataset = group_by(self.train_dataset)
+    self.train_dataset = group_by(self.train_dataset,"predicate_id")
     return SequentialSampler(self.train_dataset)
 def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -70,9 +70,6 @@ def train(args):
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)
     training_args = load_training_arguments(args.training_config_json)
-    early_stopping = EarlyStoppingCallback(
-        early_stopping_patience=5
-    )
     trainer = Trainer(
         model=model,
         args=training_args,
