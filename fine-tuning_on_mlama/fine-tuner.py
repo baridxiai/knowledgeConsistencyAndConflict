@@ -15,7 +15,7 @@ import torch
 import datetime
 from datasets import concatenate_datasets
 #torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
-
+import random
 # Training
 
 def tokenize_mlama_examples(examples, tokenizer):
@@ -43,25 +43,19 @@ def load_training_arguments(data_file):
         train_args = json.load(f)
     train_args = TrainingArguments(**train_args)
     return train_args
-def group_by(d, col):
+def group_by_index_span(d, span):
     """from: https://github.com/huggingface/datasets/issues/3644"""
     # Get the indices of each group
-    groups = {key: [] for key in d.unique(col)}
-    def create_groups_indices(key, i):
-        groups[key].append(i)
-    d.map(create_groups_indices, with_indices=True, input_columns=col)
-    # Get one dataset object per group
+    for key in range(0, int(d.num_rows/span)):
+        groups = {key: [i for i in range(key * span, span)]}
+    keys =  list(groups.keys())
+    random.shuffle(keys)
+    groups = {key: groups[key] for key in keys}
     groups = {key: d.select(indices) for key, indices in groups.items()}
-    # Apply join function
-    groups = {
-        key: d
-        for key, dataset_group in groups.items()
-    }
-    # Return concatenation of all the joined groups
     return concatenate_datasets(groups.values())
 def non_shuffle(self):
     self.train_dataset.shuffle()
-    self.train_dataset = group_by(self.train_dataset,"predicate_id")
+    self.train_dataset = group_by_index_span(self.train_dataset,53)
     return SequentialSampler(self.train_dataset)
 def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -88,5 +82,6 @@ if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--training_config_json', type=str)
+    parser.add_argument('--batch_consistency', type=int)
     args = parser.parse_args()
     train(args)
