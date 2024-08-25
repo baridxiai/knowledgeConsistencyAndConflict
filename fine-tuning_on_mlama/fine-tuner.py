@@ -49,8 +49,10 @@ def group_by_index_span(d, span):
         groups[key] =[i for i in range(key * span, (key+1)*span)]
     keys = [k for k, values in groups.items()]
     random.shuffle(keys)
-    groups = {key:groups[key] for key in keys}
-    return concatenate_datasets(groups)
+    group_index = []
+    for k, index in keys:
+        group_index += groups[index]
+    return iter(group_index)
 def non_shuffle(self):
     self.train_dataset = group_by_index_span(self.train_dataset,53)
     return SequentialSampler(self.train_dataset)
