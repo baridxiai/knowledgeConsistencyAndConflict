@@ -50,7 +50,7 @@ def group_by_index_span(d, span):
     keys = [k for k, values in groups.items()]
     random.shuffle(keys)
     group_index = []
-    for k, index in keys:
+    for k, index in enumerate(keys):
         group_index += groups[index]
     return iter(group_index)
 def non_shuffle(self):
