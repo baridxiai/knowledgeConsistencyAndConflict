@@ -8,7 +8,7 @@ from transformers import (
     Trainer,
     AutoModelForMaskedLM,TrainingArguments,DataCollatorForLanguageModeling,EarlyStoppingCallback
 )
-from torch.utils.data import  SequentialSampler
+from torch.utils.data import  SequentialSampler, RandomSampler
 from datasets import Dataset,load_dataset
 import pandas as pd
 import torch
@@ -47,13 +47,12 @@ def group_by_index_span(d, span):
     groups = dict()
     for key in range(0, int(d.num_rows/span)):
         groups[key] =[i for i in range(key * span, (key+1)*span)]
-    keys =  list(groups.keys())
-    random.shuffle(keys)
     groups = {key: groups[key] for key in keys}
     groups = {key: d.select(indices) for key, indices in groups.items()}
+    keys = torch.randperm(int(d.num_rows/span)).tolist()
+    groups = {key: groups[key] for key in keys}
     return concatenate_datasets(groups.values())
 def non_shuffle(self):
-    self.train_dataset.shuffle()
     self.train_dataset = group_by_index_span(self.train_dataset,53)
     return SequentialSampler(self.train_dataset)
 def train(args):
