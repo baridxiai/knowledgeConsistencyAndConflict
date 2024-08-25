@@ -8,7 +8,7 @@ from transformers import (
     Trainer,
     AutoModelForMaskedLM,TrainingArguments,DataCollatorForLanguageModeling,EarlyStoppingCallback
 )
-from torch.utils.data import  SequentialSampler
+from torch.utils.data import  SequentialSampler, Sampler
 from datasets import Dataset,load_dataset
 import pandas as pd
 import torch
@@ -17,6 +17,21 @@ from datasets import concatenate_datasets
 #torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
 import random
 # Training
+
+class batchSeq(SequentialSampler):
+
+    def __iter__(self):
+        span =53
+        groups = dict()
+        for key in range(0, int(self.data_source.num_rows/span)):
+            groups[key] =[i for i in range(key * span, (key+1)*span)]
+        keys = [k for k, values in groups.items()]
+        random.shuffle(keys)
+        group_index = []
+        for k, index in enumerate(keys):
+            group_index += groups[index]
+        return iter(group_index)
+
 
 def tokenize_mlama_examples(examples, tokenizer):
     obj_label = examples["obj_label"]
@@ -44,18 +59,9 @@ def load_training_arguments(data_file):
 def group_by_index_span(d, span):
     """from: https://github.com/huggingface/datasets/issues/3644"""
     # Get the indices of each group
-    groups = dict()
-    for key in range(0, int(d.num_rows/span)):
-        groups[key] =[i for i in range(key * span, (key+1)*span)]
-    keys = [k for k, values in groups.items()]
-    random.shuffle(keys)
-    group_index = []
-    for k, index in enumerate(keys):
-        group_index += groups[index]
-    return iter(group_index)
+
 def non_shuffle(self):
-    self.train_dataset = group_by_index_span(self.train_dataset,53)
-    return SequentialSampler(self.train_dataset)
+    return batchSeq(self.train_dataset)
 def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForMaskedLM.from_pretrained(args.model_name)
