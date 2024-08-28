@@ -1,14 +1,16 @@
 # Adapted implementation from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/1_analyze_mlm_bias.py\
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 from argparse import ArgumentParser
 import torch
 from tqdm import tqdm
 from datasets import load_dataset
 from tqdm import tqdm
 import pickle
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer,AutoModelForMaskedLM
 import numpy as np
-from custom_mt0_bias import MT0ForConditionalGeneration
-from custom_bert_bias import BertForMaskedLM
+#from custom_mt0_bias import MT0ForConditionalGeneration
+from models.custom_bert_bias import BertForMaskedLM
 from utils import load_mlama
 from typing import Union, List, Dict
 
@@ -34,7 +36,7 @@ def scaled_input(emb: torch.Tensor, batch_size: int, num_batch: int = 1) -> [tor
     return res, grad_step.detach().cpu().numpy()
 
 
-def tokenize_obj(tokenizer: AutoTokenizer, obj_label: str, model_type: str) -> [Dict[str, List], Dict[str, torch.Tensor, List[int], List[int]]]:
+def tokenize_obj(tokenizer: AutoTokenizer, obj_label: str, model_type: str):
     """
     Get the all necessary attributes with the tokenized object
 
@@ -72,7 +74,8 @@ def main(args):
     if args.model_type == 'encoder-decoder':
         model = MT0ForConditionalGeneration.from_pretrained(args.model_name)
     else:
-        model = BertForMaskedLM.from_pretrained(args.model_name)
+        #model = BertForMaskedLM.from_pretrained(args.model_name)
+        model = BertForMaskedLM.from_pretrained("../model_checkpoint_finetuner_BATCH_with_diff_lang/checkpoint-6000").to("cuda") 
 
     model.to('cuda')
     mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang)

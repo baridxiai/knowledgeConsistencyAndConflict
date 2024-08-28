@@ -1,12 +1,20 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 from argparse import ArgumentParser
-from eval import compute_rankc
+from eval import compute_rankc, compute_mrr
 import pickle
 from utils import initialize_wrapped_model_and_tokenizer, load_mlama 
+from transformers import AutoModelForMaskedLM
+from models.model import initialize_model_and_tokenizer, DecoderLensWrapper, EncoderWrapper, initialize_encoder_model_and_tokenizer_per_task
+import datetime
+import torch
+#torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
 
 def main(args):
     task_type = 'cloze'
     use_custom_bias_model = args.suppression_constant is not None or args.intervened_ffn_layers is not None
-    wrapped_model, _ = initialize_wrapped_model_and_tokenizer(args.model_name, task_type, use_custom_bias_model)
+    wrapped_model, tok = initialize_wrapped_model_and_tokenizer(args.model_name, task_type, use_custom_bias_model)
+    wrapped_model = EncoderWrapper(AutoModelForMaskedLM.from_pretrained("../model_checkpoint_finetuner_BATCH_with_diff_lang/checkpoint-6000").to("cuda"),tok, task_type)
     mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang)
 
     if args.intervened_ffn_layers is not None or args.suppression_constant is not None:
@@ -40,6 +48,8 @@ def main(args):
             out_filepath = f"{args.output_prefix}_matrix-{args.matrix_lang}-embedded-{args.embedded_lang}-attn-intervention.pkl"
         elif args.intervened_ffn_layers is not None:
             out_filepath = f"{args.output_prefix}_matrix-{args.matrix_lang}-embedded-{args.embedded_lang}-ffn-intervention.pkl"
+        else:
+            out_filepath = f"{args.output_prefix}_matrix-{args.matrix_lang}-embedded-{args.embedded_lang}.pkl"
         
         with open(out_filepath, 'wb') as f:
             pickle.dump(out_dict, f)
