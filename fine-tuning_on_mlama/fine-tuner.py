@@ -6,25 +6,83 @@ import json
 from transformers import (
     AutoTokenizer,
     Trainer,
-    AutoModelForMaskedLM,TrainingArguments,DataCollatorForLanguageModeling,EarlyStoppingCallback
+    AutoModelForMaskedLM,TrainingArguments,DataCollatorForLanguageModeling,
 )
 from torch.utils.data import  SequentialSampler, Sampler
 from datasets import Dataset,load_dataset
 import pandas as pd
-import torch
 import datetime
 from datasets import concatenate_datasets
-#torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
+import torch
+torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
 import random
+from copy import deepcopy
+
+import torch
+from torch import nn
+from torch.nn import functional as F
+from torch.autograd import Variable as variable
+import torch.utils.data
 # Training
 
+class EWC(object):
+    def __init__(self, model: nn.Module, dataset: list):
+
+        self.model = model
+        self.dataset = dataset
+
+        self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
+        self._means = {}
+        self._precision_matrices = self._diag_fisher()
+
+        for n, p in deepcopy(self.params).items():
+            self._means[n] = variable(p.data)
+
+    def _diag_fisher(self):
+        precision_matrices = {}
+        for n, p in deepcopy(self.params).items():
+            p.data.zero_()
+            precision_matrices[n] = variable(p.data)
+
+        self.model.eval()
+        for input in self.dataset:
+            self.model.zero_grad()
+            input = variable(input)
+            output = self.model(input).view(1, -1)
+            label = output.max(1)[1].view(-1)
+            loss = F.nll_loss(F.log_softmax(output, dim=1), label)
+            loss.backward()
+
+            for n, p in self.model.named_parameters():
+                precision_matrices[n].data += p.grad.data ** 2 / len(self.dataset)
+
+        precision_matrices = {n: p for n, p in precision_matrices.items()}
+        return precision_matrices
+
+    def penalty(self, model: nn.Module):
+        loss = 0
+        for n, p in model.named_parameters():
+            _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
+            loss += _loss.sum()
+        return loss
+class EWC_Trainer(Trainer):
+    def compute_loss(self, model, inputs, return_outputs=False):
+        re = super(EWC_Trainer, self).compute_loss(model, inputs, return_outputs=return_outputs)
+        if return_outputs:
+            loss, outputs = re
+        else:
+            loss = re
+        loss = ewc_penality = EWC(model,inputs).penalty(model)
+        return (loss, outputs) if return_outputs else loss
 class batchSeq(SequentialSampler):
+    def __init__(self, data_source,span):
+        self.data_source = data_source
+        self.span = span
 
     def __iter__(self):
-        span =53
         groups = dict()
-        for key in range(0, int(self.data_source.num_rows/span)):
-            groups[key] =[i for i in range(key * span, (key+1)*span)]
+        for key in range(0, int(self.data_source.num_rows/self.span)):
+            groups[key] =[i for i in range(key * self.span, (key+1)*self.span)]
         keys = [k for k, values in groups.items()]
         random.shuffle(keys)
         group_index = []
@@ -56,12 +114,9 @@ def load_training_arguments(data_file):
         train_args = json.load(f)
     train_args = TrainingArguments(**train_args)
     return train_args
-def group_by_index_span(d, span):
-    """from: https://github.com/huggingface/datasets/issues/3644"""
-    # Get the indices of each group
 
-def non_shuffle(self):
-    return batchSeq(self.train_dataset)
+def non_shuffle(self,span):
+    return batchSeq(self.train_dataset,span)
 def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForMaskedLM.from_pretrained(args.model_name)
@@ -69,7 +124,7 @@ def train(args):
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)
     training_args = load_training_arguments(args.training_config_json)
-    trainer = Trainer(
+    trainer = EWC_Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
@@ -77,8 +132,8 @@ def train(args):
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
-    trainer._get_train_sampler =lambda: non_shuffle(trainer)
-
+    # trainer._get_train_sampler =lambda: non_shuffle(trainer,span=53)
+    trainer.compute_loss
     trainer.train()
 
 
