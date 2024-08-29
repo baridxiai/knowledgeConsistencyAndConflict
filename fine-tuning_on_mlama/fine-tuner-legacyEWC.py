@@ -8,7 +8,6 @@ from transformers import (
     Trainer,
     AutoModelForMaskedLM,TrainingArguments,DataCollatorForLanguageModeling,XLMRobertaForMaskedLM
 )
-from trl.train import SFTTrainer
 from torch.utils.data import  SequentialSampler
 from datasets import Dataset,load_dataset
 import pandas as pd
@@ -26,17 +25,64 @@ from torch.autograd import Variable as variable
 import torch.utils.data
 # Training
 
-from peft import LoraConfig
-peft_config = LoraConfig(
-    r=64,  # the rank of the LoRA matrices
-    lora_alpha=16, # the weight
-    lora_dropout=0.1, # dropout to add to the LoRA layers
-    bias="none", # add bias to the nn.Linear layers?
-    task_type="MASKED_LM",
-    target_modules=["q_proj", "k_proj","v_proj","o_proj"], # the name of the layers to add LoRA
-    modules_to_save=None, # layers to unfreeze and train from the original pre-trained model
-)
+class EWC(object):
+    def __init__(self, model, dataset, tokenizer):
 
+        self.model = model
+        self.dataset = dataset
+
+        self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
+        self._means = {}
+        self._precision_matrices = self._diag_fisher()
+        self.tokenizer = tokenizer
+        for n, p in deepcopy(self.params).items():
+            self._means[n] = variable(p.data)
+
+    def _diag_fisher(self):
+        precision_matrices = {}
+        for n, p in deepcopy(self.params).items():
+            p.data.zero_()
+            precision_matrices[n] = variable(p.data)
+
+        self.model.eval()
+
+        self.model.zero_grad()
+        loss = self.model(**self.dataset)["loss"]
+        loss.backward()
+        for n, p in self.model.named_parameters():
+            precision_matrices[n].data += p.grad.data ** 2
+        # output = self.model(input).view(1, -1)
+        # label = output.max(1)[1].view(-1)
+        # loss = F.nll_loss(F.log_softmax(output, dim=1), label,reduction=None)
+        # loss.backward()
+        # for input in self.dataset:
+        #     # input = variable(input)
+        #     self.model.zero_grad()
+        #     output = self.model(input).logits.view(1, -1)
+        #     label = output.max(1)[1].view(-1)
+        #     loss = F.nll_loss(F.log_softmax(output, dim=1), label)
+        #     loss.backward()
+
+
+        precision_matrices = {n: p for n, p in precision_matrices.items()}
+        return precision_matrices
+
+    def penalty(self, model: nn.Module):
+        loss = 0
+        for n, p in model.named_parameters():
+            _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
+            loss += _loss.sum()
+        return loss
+class EWC_Trainer(Trainer):
+    def compute_loss(self, model, inputs, return_outputs=False):
+        re = super(EWC_Trainer, self).compute_loss(model, inputs, return_outputs=return_outputs)
+        if return_outputs:
+            loss, outputs = re
+        else:
+            loss = re
+        ewc_penality = EWC(model,inputs).penalty(model)
+        loss += ewc_penality*1000
+        return (loss, outputs) if return_outputs else loss
 class batchSeq(SequentialSampler):
     def __init__(self, data_source,span):
         self.data_source = data_source
@@ -87,17 +133,16 @@ def train(args):
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)
     training_args = load_training_arguments(args.training_config_json)
-    trainer = SFTTrainer(
+    trainer = EWC_Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        peft_config=peft_config
-
     )
-    trainer._get_train_sampler =lambda: non_shuffle(trainer,span=53)
+    # trainer._get_train_sampler =lambda: non_shuffle(trainer,span=53)
+    trainer.training_step
     trainer.train()
 
 
