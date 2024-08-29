@@ -1,5 +1,5 @@
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 os.environ["WANDB_PROJECT"]="codemixed_knowledge_consistency"
 from argparse import ArgumentParser
 import json
@@ -8,7 +8,7 @@ from transformers import (
     Trainer,
     AutoModelForMaskedLM,TrainingArguments,DataCollatorForLanguageModeling,XLMRobertaForMaskedLM
 )
-from trl.train import SFTTrainer
+from trl import SFTTrainer
 from torch.utils.data import  SequentialSampler
 from datasets import Dataset,load_dataset
 import pandas as pd
@@ -33,7 +33,7 @@ peft_config = LoraConfig(
     lora_dropout=0.1, # dropout to add to the LoRA layers
     bias="none", # add bias to the nn.Linear layers?
     task_type="MASKED_LM",
-    target_modules=["q_proj", "k_proj","v_proj","o_proj"], # the name of the layers to add LoRA
+    target_modules=["intermediate.dense"], # the name of the layers to add LoRA
     modules_to_save=None, # layers to unfreeze and train from the original pre-trained model
 )
 
