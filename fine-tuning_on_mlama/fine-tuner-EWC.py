@@ -26,7 +26,7 @@ import torch.utils.data
 from tools import utils
 from models.model import EncoderWrapper
 # Training
-
+KB = utils.load_mlama("en","en")
 class EWC(object):
     def __init__(self, model,tokenizer):
 
@@ -34,7 +34,6 @@ class EWC(object):
         self.model = self.modelWrapper.model
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
-        self.knowledge_base = utils.load_mlama("en",None)
         for n, p in deepcopy(self.params).items():
             self._means[n] = variable(p.data)
         self._precision_matrices = self._diag_fisher()
@@ -44,7 +43,7 @@ class EWC(object):
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
             precision_matrices[n] = variable(p.data)
-        self.modelWrapper.inference_cloze_grads(self.knowledge_base)
+        self.modelWrapper.inference_cloze_grads(KB)
         for n, p in self.modelWrapper.model.named_parameters():
             precision_matrices[n].data += p.grad.data ** 2
         # output = self.model(input).view(1, -1)
@@ -76,7 +75,7 @@ class EWC_Trainer(Trainer):
             loss, outputs = re
         else:
             loss = re
-        ewc_penality = EWC(self.model, self.tokenizer).penalty()
+        ewc_penality = EWC(self.model,self.tokenizer).penalty()
         loss += ewc_penality
         return (loss, outputs) if return_outputs else loss
 class batchSeq(SequentialSampler):
