@@ -28,9 +28,9 @@ from models.model import EncoderWrapper
 # Training
 
 class EWC(object):
-    def __init__(self):
+    def __init__(self, model,tokenizer):
 
-        self.modelWrapper = EncoderWrapper("FacebookAI/xlm-roberta-base", "FacebookAI/xlm-roberta-base",'cloze')
+        self.modelWrapper = EncoderWrapper(model,tokenizer,'cloze')
         self.model = self.modelWrapper.model
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
@@ -63,13 +63,12 @@ class EWC(object):
         precision_matrices = {n: p for n, p in precision_matrices.items()}
         return precision_matrices
 
-    def penalty(self, model: nn.Module):
+    def penalty(self):
         loss = 0
-        for n, p in model.named_parameters():
+        for n, p in self.model.named_parameters():
             _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
             loss += _loss.sum()
         return loss
-EWC_model =EWC()
 class EWC_Trainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
         re = super(EWC_Trainer, self).compute_loss(model, inputs, return_outputs=return_outputs)
@@ -77,7 +76,7 @@ class EWC_Trainer(Trainer):
             loss, outputs = re
         else:
             loss = re
-        ewc_penality = EWC_model.penalty(model)
+        ewc_penality = EWC(self.model, self.tokenizer).penalty()
         loss += ewc_penality
         return (loss, outputs) if return_outputs else loss
 class batchSeq(SequentialSampler):
