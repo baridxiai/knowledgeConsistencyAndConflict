@@ -30,10 +30,11 @@ from models.model import EncoderWrapper
 class EWC(object):
     def __init__(self):
 
+        self.modelWrapper = EncoderWrapper("FacebookAI/xlm-roberta-base", "FacebookAI/xlm-roberta-base")
+        self.model = self.modelWrapper.model
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
         self.knowledge_base = utils.load_mlama("en",None)
-        self.modelWrapper = EncoderWrapper("FacebookAI/xlm-roberta-base", "FacebookAI/xlm-roberta-base")
         for n, p in deepcopy(self.params).items():
             self._means[n] = variable(p.data)
         self._precision_matrices = self._diag_fisher()
