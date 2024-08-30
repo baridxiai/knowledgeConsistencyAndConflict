@@ -30,7 +30,7 @@ from models.model import EncoderWrapper
 class EWC(object):
     def __init__(self):
 
-        self.modelWrapper = EncoderWrapper("FacebookAI/xlm-roberta-base", "FacebookAI/xlm-roberta-base")
+        self.modelWrapper = EncoderWrapper("FacebookAI/xlm-roberta-base", "FacebookAI/xlm-roberta-base",'cloze')
         self.model = self.modelWrapper.model
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
