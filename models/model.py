@@ -1006,9 +1006,9 @@ class EncoderWrapper:
 
         batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
         obj_labels = [instance['obj_label'] for instance in batch]
-        labels = self.tokenizer(batch,return_tensors='pt')["input_ids"]
 
-        mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']) for instance in batch]
+        mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+        labels = self.tokenizer(batch,return_tensors='pt')["input_ids"]
 
         # Get tokenized object entities
         _, obj_token_lengths, _= self._tokenize_obj(obj_labels)
