@@ -28,14 +28,10 @@ from models.model import EncoderWrapper
 # Training
 
 class EWC(object):
-    def __init__(self, model, dataset, tokenizer):
-
-        self.model = model
-        self.dataset = dataset
+    def __init__(self):
 
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
-        self.tokenizer = tokenizer
         self.knowledge_base = utils.load_mlama("en",None)
         self.modelWrapper = EncoderWrapper("FacebookAI/xlm-roberta-base", "FacebookAI/xlm-roberta-base")
         for n, p in deepcopy(self.params).items():
@@ -72,6 +68,7 @@ class EWC(object):
             _loss = self._precision_matrices[n] * (p - self._means[n]) ** 2
             loss += _loss.sum()
         return loss
+EWC_model =EWC()
 class EWC_Trainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
         re = super(EWC_Trainer, self).compute_loss(model, inputs, return_outputs=return_outputs)
@@ -79,7 +76,7 @@ class EWC_Trainer(Trainer):
             loss, outputs = re
         else:
             loss = re
-        ewc_penality = EWC(model,inputs).penalty(model)
+        ewc_penality = EWC_model.penalty(model)
         loss += ewc_penality
         return (loss, outputs) if return_outputs else loss
 class batchSeq(SequentialSampler):
