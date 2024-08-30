@@ -23,6 +23,8 @@ from torch import nn
 from torch.nn import functional as F
 from torch.autograd import Variable as variable
 import torch.utils.data
+from tools import utils
+from models.model import EncoderWrapper
 # Training
 
 class EWC(object):
@@ -33,23 +35,20 @@ class EWC(object):
 
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
-        self._precision_matrices = self._diag_fisher()
         self.tokenizer = tokenizer
+        self.knowledge_base = utils.load_mlama("en",None)
+        self.modelWrapper = EncoderWrapper("FacebookAI/xlm-roberta-base", "FacebookAI/xlm-roberta-base")
         for n, p in deepcopy(self.params).items():
             self._means[n] = variable(p.data)
+        self._precision_matrices = self._diag_fisher()
 
     def _diag_fisher(self):
         precision_matrices = {}
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
             precision_matrices[n] = variable(p.data)
-
-        self.model.eval()
-
-        self.model.zero_grad()
-        loss = self.model(**self.dataset)["loss"]
-        loss.backward()
-        for n, p in self.model.named_parameters():
+        self.modelWrapper.inference_cloze_grads(self.knowledge_base)
+        for n, p in self.modelWrapper.model.named_parameters():
             precision_matrices[n].data += p.grad.data ** 2
         # output = self.model(input).view(1, -1)
         # label = output.max(1)[1].view(-1)
@@ -81,7 +80,7 @@ class EWC_Trainer(Trainer):
         else:
             loss = re
         ewc_penality = EWC(model,inputs).penalty(model)
-        loss += ewc_penality*1000
+        loss += ewc_penality
         return (loss, outputs) if return_outputs else loss
 class batchSeq(SequentialSampler):
     def __init__(self, data_source,span):
