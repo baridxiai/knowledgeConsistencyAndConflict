@@ -1,32 +1,8 @@
 import re
-from transformers import AutoTokenizer
 from datasets import load_dataset
-from tqdm import tqdm
-from models.modelWrapper import initialize_model_and_tokenizer, DecoderLensWrapper, EncoderWrapper, initialize_encoder_model_and_tokenizer_per_task
-from models.custom_mt0_bias import MT0ForConditionalGeneration
-from models.custom_bert_bias import BertForMaskedLM
+import tqdm
 
-def initialize_wrapped_model_and_tokenizer(model_name:str, task_type:str, use_custom_bias_model: bool = False) -> [object, AutoTokenizer]:
-    #initialize based on task
-    task_type = 'cloze'
-    if 'mt0' in model_name or 'mt5' in model_name: # encoder-decoder
-        if not use_custom_bias_model:
-            model, tokenizer = initialize_model_and_tokenizer(model_name)
-        else:
-            _, tokenizer = initialize_model_and_tokenizer(model_name)
-            model = MT0ForConditionalGeneration.from_pretrained(model_name).to('cuda')
-        wrapped_model = DecoderLensWrapper(model, tokenizer)
-    else: # encoder
-        if not use_custom_bias_model:
-            model, tokenizer = initialize_encoder_model_and_tokenizer_per_task(model_name, task_type)
-        else:
-            _, tokenizer =  initialize_encoder_model_and_tokenizer_per_task(model_name, task_type)
-            model = BertForMaskedLM.from_pretrained(model_name).to('cuda')
-        wrapped_model = EncoderWrapper(model, tokenizer, task_type)
-    return wrapped_model, tokenizer
-
-
-def add_punctuations_whitespace(s: str) -> str:
+def add_punctuations_whitespace(s):
     """
     To add whitespace in-between the token and punctuation to enable the these punctuations to be tokenized separately with words
     @param s(str): input string that we want to tokenize
@@ -36,8 +12,48 @@ def add_punctuations_whitespace(s: str) -> str:
     s = re.sub('\s{2,}', ' ', s)
     return s
 
+def tokenize_obj(self, obj_labels):
+    """
 
-def load_mlama(matrix_lang: str, target_lang: str):
+    Tokenize object entity
+
+    @param obj_labels: object entity tokens
+
+    @return all_obj_tokens: tokenized object entity
+    @return obj_token_lengths: the length of the object entity (excluding padding token)
+    @return max_token_len: maximum object entity length (excluding padding token) within one batch
+    """
+    all_obj_tokens = []
+    obj_token_lengths = []
+    for obj_label in obj_labels:
+        obj_tokens = self.tokenizer(obj_label)["input_ids"][1:-1]
+        obj_token_lengths.append(len(obj_tokens))
+        all_obj_tokens.append(obj_tokens)
+
+    max_token_len = max(obj_token_lengths)
+
+    # add padding
+    for i in range(len(all_obj_tokens)):
+        num_pad_tokens = max_token_len-obj_token_lengths[i]
+        all_obj_tokens[i] += [self.tokenizer.pad_token_id]*num_pad_tokens
+    return all_obj_tokens, obj_token_lengths, max_token_len
+def mask_sentences(self, prompts, obj_token_lengths):
+    """
+    Replace single mask into tokenizer's n-gram masks
+
+    @param prompts: list of prompts/inputs]
+
+    @return new_prompts: list of edited prompts/inputs
+    """
+
+    new_prompts = []
+    for prompt, obj_token_length in zip(prompts, obj_token_lengths):
+        new_mask = " ".join(["<mask>"]*obj_token_length)
+        new_prompt = prompt.replace('[Y]', new_mask)
+        new_prompt = new_prompt.replace('<mask>', self.tokenizer.mask_token)
+        new_prompts.append(new_prompt)
+    return new_prompts
+def load_mlama(matrix_lang, target_lang):
     """
     Load paralllel matrix_lang-target_lang sentences from mLAMA dataset
     @param matrix_lang: matrix language

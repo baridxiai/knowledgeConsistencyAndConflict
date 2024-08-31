@@ -998,13 +998,10 @@ class EncoderWrapper:
             return mono_rank_preds, cs_rank_preds, labels
         else:
             return mono_rank_preds_per_layer, cs_rank_preds_per_layer, labels
-    def inference_cloze_grads(self, instances: List[Dict], batch_size: int = 64):
+    def inference_cloze_grads(self, batch: List[Dict], batch_size: int = 64):
         self.model.eval()
         self.model.zero_grad()
-        batch_cnt = len(instances)//batch_size
-        i = random.randint(0, batch_cnt-1)
 
-        batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
         obj_labels = [instance['obj_label'] for instance in batch]
 
         mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']) for instance in batch]

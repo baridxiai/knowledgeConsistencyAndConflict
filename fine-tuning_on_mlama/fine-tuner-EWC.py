@@ -29,10 +29,10 @@ from torch.nn import functional as F
 from torch.autograd import Variable as variable
 import torch.utils.data
 from tools import utils
-from models.model import EncoderWrapper
+from models.modelWrapper import EncoderWrapper
 
 # Training
-KB = utils.load_mlama("en", "af")
+KB = utils.load_mlama("en", None)
 
 
 class EWC(object):
@@ -53,10 +53,13 @@ class EWC(object):
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
             precision_matrices[n] = variable(p.data)
-        for _ in range(0, 64):
-            self.modelWrapper.inference_cloze_grads(KB, 64)
+        batch_cnt = len(KB)//64
+
+        for i in range(0, batch_cnt):
+            batch = KB[i*64:min((i+1)*64, len(KB))]
+            self.modelWrapper.inference_cloze_grads(batch, 64)
             for n, p in self.modelWrapper.model.named_parameters():
-                precision_matrices[n].data += p.grad.data**2 / (64**2)
+                precision_matrices[n].data += p.grad.data**2 / len(KB)
 
         precision_matrices = {n: p for n, p in precision_matrices.items()}
         return precision_matrices
@@ -135,7 +138,8 @@ def tokenize_wiki_examples(examples, tokenizer):
 
 def load_training_validation_dataset(tokenizer):
     #  mlama 53 is sorted in order of statements.
-    m_lama = load_dataset("parquet", data_files="./mlama53.parquet")["train"]
+    m_lama = m_lama = load_dataset("m_lama")["test"].shuffle(seed=42)
+    m_lama = m_lama.filter(lambda x: x["language"]=="en")
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
     tokenized_train = m_lama.map(
         lambda examples: tokenize_mlama_examples(examples, tokenizer),
@@ -164,7 +168,7 @@ def non_shuffle(self, span):
 
 def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    model = AutoModelForMaskedLM.from_pretrained(args.model_name)
+    model = AutoModelForMaskedLM.from_pretrained(args.model_name).to("cuda")
 
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)

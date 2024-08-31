@@ -65,7 +65,7 @@ def tokenize_wiki_examples(examples, tokenizer):
     return tokenizer(examples["text"], padding=True,  truncation=True)
 def load_training_validation_dataset(tokenizer):
     #  mlama 53 is sorted in order of statements.
-    m_lama = load_dataset("parquet", data_files="./mlama53.parquet")["train"]
+    m_lama = m_lama = load_dataset("m_lama")["test"].shuffle(seed=42)
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
     tokenized_train = m_lama.map(lambda examples: tokenize_mlama_examples(examples, tokenizer), batched=False,remove_columns=m_lama.column_names)
     tokenized_val = val_dataset.map(lambda examples: tokenize_wiki_examples(examples, tokenizer), batched=True,remove_columns=val_dataset.column_names)
@@ -87,17 +87,14 @@ def train(args):
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)
     training_args = load_training_arguments(args.training_config_json)
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        peft_config=peft_config
-
     )
-    trainer._get_train_sampler =lambda: non_shuffle(trainer,span=53)
     trainer.train()
 
 
