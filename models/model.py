@@ -998,7 +998,7 @@ class EncoderWrapper:
             return mono_rank_preds, cs_rank_preds, labels
         else:
             return mono_rank_preds_per_layer, cs_rank_preds_per_layer, labels
-    def inference_cloze_grads(self, instances: List[Dict], batch_size: int = 64, dynamic_model=None ):
+    def inference_cloze_grads(self, instances: List[Dict], batch_size: int = 64):
         self.model.eval()
         self.model.zero_grad()
         batch_cnt = len(instances)//batch_size
@@ -1007,8 +1007,9 @@ class EncoderWrapper:
         batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
         obj_labels = [instance['obj_label'] for instance in batch]
 
-        mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
-        labels = self.tokenizer(batch,return_tensors='pt')["input_ids"]
+        mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']) for instance in batch]
+        org_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+        labels = self.tokenizer(org_prompts,padding=True, truncation=True,return_tensors='pt')["input_ids"]
 
         # Get tokenized object entities
         _, obj_token_lengths, _= self._tokenize_obj(obj_labels)
@@ -1021,10 +1022,7 @@ class EncoderWrapper:
         masked_indices = mono_inputs['input_ids'] == self.tokenizer.mask_token_id
         labels[~masked_indices] = -100
         mono_inputs['labels'] = labels
-        if dynamic_model is not None:
-            loss = dynamic_model(**mono_inputs)['loss']
-        else:
-            loss = self.model(**mono_inputs)['loss']
+        loss = self.model(**mono_inputs)['loss']
         loss.backward()
         return loss
     def inference_cloze_task_with_causal_intervention(self, instances: List[Dict], batch_size: int = 16

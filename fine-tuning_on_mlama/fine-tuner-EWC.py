@@ -1,5 +1,5 @@
 import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 os.environ["WANDB_PROJECT"]="codemixed_knowledge_consistency"
 from argparse import ArgumentParser
 import json
@@ -26,11 +26,13 @@ import torch.utils.data
 from tools import utils
 from models.model import EncoderWrapper
 # Training
-KB = utils.load_mlama("en","en")
+KB = utils.load_mlama("en","af")
+XLMR_model = AutoModelForMaskedLM.from_pretrained('FacebookAI/xlm-roberta-base')
+XLMR_tok = AutoTokenizer.from_pretrained('FacebookAI/xlm-roberta-base')
 class EWC(object):
     def __init__(self, model,tokenizer):
 
-        self.modelWrapper = EncoderWrapper(model,tokenizer,'cloze')
+        self.modelWrapper = EncoderWrapper(XLMR_model,XLMR_tok,'cloze')
         self.model = self.modelWrapper.model
         self.params = {n: p for n, p in self.model.named_parameters() if p.requires_grad}
         self._means = {}
@@ -43,21 +45,10 @@ class EWC(object):
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
             precision_matrices[n] = variable(p.data)
-        self.modelWrapper.inference_cloze_grads(KB)
-        for n, p in self.modelWrapper.model.named_parameters():
-            precision_matrices[n].data += p.grad.data ** 2
-        # output = self.model(input).view(1, -1)
-        # label = output.max(1)[1].view(-1)
-        # loss = F.nll_loss(F.log_softmax(output, dim=1), label,reduction=None)
-        # loss.backward()
-        # for input in self.dataset:
-        #     # input = variable(input)
-        #     self.model.zero_grad()
-        #     output = self.model(input).logits.view(1, -1)
-        #     label = output.max(1)[1].view(-1)
-        #     loss = F.nll_loss(F.log_softmax(output, dim=1), label)
-        #     loss.backward()
-
+        for _ in range(0,64):
+            self.modelWrapper.inference_cloze_grads(KB,1)
+            for n, p in self.modelWrapper.model.named_parameters():
+                precision_matrices[n].data += p.grad.data ** 2/64
 
         precision_matrices = {n: p for n, p in precision_matrices.items()}
         return precision_matrices
