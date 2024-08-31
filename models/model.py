@@ -1002,7 +1002,7 @@ class EncoderWrapper:
         self.model.eval()
         self.model.zero_grad()
         batch_cnt = len(instances)//batch_size
-        i = random.randint(0, batch_cnt)
+        i = random.randint(0, batch_cnt-1)
 
         batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
         obj_labels = [instance['obj_label'] for instance in batch]
