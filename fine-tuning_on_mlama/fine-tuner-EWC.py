@@ -27,7 +27,7 @@ from tools import utils
 from models.model import EncoderWrapper
 # Training
 KB = utils.load_mlama("en","af")
-XLMR_model = AutoModelForMaskedLM.from_pretrained('FacebookAI/xlm-roberta-base')
+XLMR_model = AutoModelForMaskedLM.from_pretrained('FacebookAI/xlm-roberta-base').to('cuda')
 XLMR_tok = AutoTokenizer.from_pretrained('FacebookAI/xlm-roberta-base')
 class EWC(object):
     def __init__(self, model,tokenizer):
