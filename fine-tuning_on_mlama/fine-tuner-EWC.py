@@ -33,16 +33,12 @@ from models.model import EncoderWrapper
 
 # Training
 KB = utils.load_mlama("en", "af")
-XLMR_model = AutoModelForMaskedLM.from_pretrained("FacebookAI/xlm-roberta-base").to(
-    "cuda"
-)
-XLMR_tok = AutoTokenizer.from_pretrained("FacebookAI/xlm-roberta-base")
 
 
 class EWC(object):
     def __init__(self, model, tokenizer):
 
-        self.modelWrapper = EncoderWrapper(XLMR_model, XLMR_tok, "cloze")
+        self.modelWrapper = EncoderWrapper(model, tokenizer, "cloze")
         self.model = self.modelWrapper.model
         self.params = {
             n: p for n, p in self.model.named_parameters() if p.requires_grad
@@ -74,7 +70,7 @@ class EWC(object):
 
 
 class EWC_Trainer(Trainer):
-    def __init(
+    def __init__(
         self,
         model,
         args,
@@ -103,7 +99,7 @@ class EWC_Trainer(Trainer):
         else:
             loss = re
         ewc_penality = self.EWC_base.penalty(self.model)
-        loss += ewc_penality
+        loss += ewc_penality*100
         return (loss, outputs) if return_outputs else loss
 
 
