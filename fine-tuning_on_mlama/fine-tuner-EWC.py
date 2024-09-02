@@ -9,31 +9,21 @@ from transformers import (
     Trainer,
     AutoModelForMaskedLM,
     TrainingArguments,
-    DataCollatorForLanguageModeling,
-    XLMRobertaForMaskedLM,
+    DataCollatorWithPadding,
 )
 from torch.utils.data import SequentialSampler
 from datasets import Dataset, load_dataset
-import pandas as pd
-import datetime
-from datasets import concatenate_datasets
-import torch
 
 # torch.distributed.init_process_group(backend="nccl", timeout=datetime.timedelta(days=1))
 import random
 from copy import deepcopy
 
-import torch
-from torch import nn
-from torch.nn import functional as F
 from torch.autograd import Variable as variable
-import torch.utils.data
-from tools import utils
+from tools import mLama_util
 from models.modelWrapper import EncoderWrapper
 
 # Training
-KB = utils.load_mlama("en", None)
-
+KB =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
 
 class EWC(object):
     def __init__(self, model, tokenizer):
@@ -126,11 +116,19 @@ class batchSeq(SequentialSampler):
 
 def tokenize_mlama_examples(examples, tokenizer):
     obj_label = examples["obj_label"]
+    _, obj_token_lengths, _= mLama_util.tokenize_obj(obj_label)
     sub_label = examples["sub_label"]
     template = examples["template"]
-    examples = template.replace("[X]", sub_label).replace("[Y]", obj_label)
-    tokens = tokenizer(examples, padding=True, truncation=True)
-    return tokens
+    mono_prompts = template.replace("[X]", sub_label)
+    mono_prompts = mLama_util.mask_sentences(mono_prompts, obj_token_lengths)
+    mono_inputs = tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt')
+    labels = template.replace("[X]", sub_label).replace("[Y]", obj_label)
+    labels = tokenizer(labels, padding=True, truncation=True)
+    masked_indices = mono_inputs['input_ids'] == tokenizer.mask_token_id
+    labels[~masked_indices] = -100
+    mono_inputs['labels'] = labels
+
+    return mono_inputs
 
 
 def tokenize_wiki_examples(examples, tokenizer):
@@ -171,7 +169,8 @@ def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForMaskedLM.from_pretrained(args.model_name).to("cuda")
 
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=True)
+
+    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)
     training_args = load_training_arguments(args.training_config_json)
     EWC_base = EWC(model, tokenizer)
