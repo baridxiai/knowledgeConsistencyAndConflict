@@ -1,12 +1,11 @@
 from tqdm import tqdm
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering, AutoModelForMaskedLM, AutoModelForSequenceClassification, AutoModel
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering, AutoModelForMaskedLM, AutoModelForSequenceClassification, AutoModel,DataCollatorForLanguageModeling
 from transformers.modeling_outputs import BaseModelOutput
 from tqdm.contrib import tzip
 import numpy as np
 from typing import Dict, List, Tuple, Union
-import pdb
-import random
+
 
 def print_gpu_memory_usage():
     print(f"GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
@@ -999,6 +998,19 @@ class EncoderWrapper:
         else:
             return mono_rank_preds_per_layer, cs_rank_preds_per_layer, labels
     def inference_cloze_grads(self, batch: List[Dict], batch_size: int = 64):
+        self.model.eval()
+        self.model.zero_grad()
+
+        batch = self.tokenizer(batch,padding=True, truncation=True,return_tensors='pt')["input_ids"]
+        batch["input_ids"], batch["labels"] = DataCollatorForLanguageModeling(self.tokenizer).torch_mask_tokens(batch["input_ids"], None)
+
+        # Get tokenized object entities
+
+        # Do n-gram masking
+        loss = self.model(**batch)['loss']
+        loss.backward()
+        return loss
+    def inference_mlama_cloze_grads(self, batch: List[Dict], batch_size: int = 64):
         self.model.eval()
         self.model.zero_grad()
 
