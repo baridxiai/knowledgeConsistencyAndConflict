@@ -116,11 +116,11 @@ class batchSeq(SequentialSampler):
 
 def tokenize_mlama_examples(examples, tokenizer):
     obj_label = examples["obj_label"]
-    _, obj_token_lengths, _= mLama_util.tokenize_obj(obj_label)
+    _, obj_token_lengths, _= mLama_util.tokenize_obj(obj_label,tokenizer)
     sub_label = examples["sub_label"]
     template = examples["template"]
     mono_prompts = template.replace("[X]", sub_label)
-    mono_prompts = mLama_util.mask_sentences(mono_prompts, obj_token_lengths)
+    mono_prompts = mLama_util.mask_sentences(mono_prompts, obj_token_lengths,tokenizer)
     mono_inputs = tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt')
     labels = template.replace("[X]", sub_label).replace("[Y]", obj_label)
     labels = tokenizer(labels, padding=True, truncation=True)

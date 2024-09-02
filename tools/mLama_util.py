@@ -12,7 +12,7 @@ def add_punctuations_whitespace(s):
     s = re.sub('\s{2,}', ' ', s)
     return s
 
-def tokenize_obj(self, obj_labels):
+def tokenize_obj(obj_labels,tokenizer):
     """
 
     Tokenize object entity
@@ -26,7 +26,7 @@ def tokenize_obj(self, obj_labels):
     all_obj_tokens = []
     obj_token_lengths = []
     for obj_label in obj_labels:
-        obj_tokens = self.tokenizer(obj_label)["input_ids"][1:-1]
+        obj_tokens = tokenizer(obj_label)["input_ids"][1:-1]
         obj_token_lengths.append(len(obj_tokens))
         all_obj_tokens.append(obj_tokens)
 
@@ -35,9 +35,9 @@ def tokenize_obj(self, obj_labels):
     # add padding
     for i in range(len(all_obj_tokens)):
         num_pad_tokens = max_token_len-obj_token_lengths[i]
-        all_obj_tokens[i] += [self.tokenizer.pad_token_id]*num_pad_tokens
+        all_obj_tokens[i] += [tokenizer.pad_token_id]*num_pad_tokens
     return all_obj_tokens, obj_token_lengths, max_token_len
-def mask_sentences(self, prompts, obj_token_lengths):
+def mask_sentences(prompts, obj_token_lengths,tokenizer):
     """
     Replace single mask into tokenizer's n-gram masks
 
@@ -50,7 +50,7 @@ def mask_sentences(self, prompts, obj_token_lengths):
     for prompt, obj_token_length in zip(prompts, obj_token_lengths):
         new_mask = " ".join(["<mask>"]*obj_token_length)
         new_prompt = prompt.replace('[Y]', new_mask)
-        new_prompt = new_prompt.replace('<mask>', self.tokenizer.mask_token)
+        new_prompt = new_prompt.replace('<mask>', tokenizer.mask_token)
         new_prompts.append(new_prompt)
     return new_prompts
 def load_mlama(matrix_lang, target_lang):
