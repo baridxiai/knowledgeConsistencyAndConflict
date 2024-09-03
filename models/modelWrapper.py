@@ -1007,7 +1007,7 @@ class EncoderWrapper:
         # Get tokenized object entities
 
         # Do n-gram masking
-        loss = self.model(**batch.to("cupda"))['loss']
+        loss = self.model(**batch.to("cuda"))['loss']
         loss.backward()
         return loss
     def inference_mlama_cloze_grads(self, batch: List[Dict], batch_size: int = 64):
