@@ -34,13 +34,13 @@ class EWC(object):
         self._means = {}
         for n, p in deepcopy(self.params).items():
             self._means[n] = variable(p.data)
-        self._precision_matrices = self._diag_fisher()
-        KB =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-        self.KB =  KB.map(
+        wiki =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        self.KB = wiki.map(
                 lambda examples: tokenize_wiki_examples(examples, tokenizer),
                 batched=True,
-                remove_columns=KB.column_names,
+                remove_columns=wiki.column_names,
             )
+        self._precision_matrices = self._diag_fisher()
 
     def _diag_fisher(self):
         batch_size = 128
