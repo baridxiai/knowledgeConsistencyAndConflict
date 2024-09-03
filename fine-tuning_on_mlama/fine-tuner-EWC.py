@@ -51,7 +51,7 @@ class EWC(object):
         batch_cnt = len(self.KB)//batch_size
 
         for i in range(0, batch_cnt):
-            batch = self.KB[i*64:min((i+1)*64, len(self.KB))]
+            batch = self.KB[i*batch_size:min((i+1)*batch_size, len(self.KB))]
             self.modelWrapper.inference_cloze_grads(batch, batch_size)
             for n, p in self.modelWrapper.model.named_parameters():
                 precision_matrices[n].data += p.grad.data**2 / batch_cnt
