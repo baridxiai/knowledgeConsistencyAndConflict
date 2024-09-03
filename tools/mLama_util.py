@@ -12,7 +12,7 @@ def add_punctuations_whitespace(s):
     s = re.sub('\s{2,}', ' ', s)
     return s
 
-def _tokenize_obj(obj_labels,tokenizer):
+def tokenize_obj(obj_labels,tokenizer):
     """
 
     Tokenize object entity
