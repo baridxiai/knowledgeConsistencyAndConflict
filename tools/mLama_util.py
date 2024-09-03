@@ -12,7 +12,7 @@ def add_punctuations_whitespace(s):
     s = re.sub('\s{2,}', ' ', s)
     return s
 
-def tokenize_obj(obj_labels,tokenizer):
+def _tokenize_obj(obj_labels,tokenizer):
     """
 
     Tokenize object entity
@@ -25,8 +25,13 @@ def tokenize_obj(obj_labels,tokenizer):
     """
     all_obj_tokens = []
     obj_token_lengths = []
+    special_tok_id =tokenizer("▁")[0:-1]
     for obj_label in obj_labels:
-        obj_tokens = tokenizer(obj_label)["input_ids"][1:-1]
+        obj_tokens = tokenizer(obj_label)["input_ids"]
+        if special_tok_id in obj_tokens:
+            obj_tokens = obj_tokens[2:-1]
+        else:
+            obj_tokens = obj_tokens[1:-1]
         obj_token_lengths.append(len(obj_tokens))
         all_obj_tokens.append(obj_tokens)
 

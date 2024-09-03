@@ -121,13 +121,14 @@ def tokenize_mlama_examples(examples, tokenizer):
     template = examples["template"]
     mono_prompts = template.replace("[X]", sub_label)
     mono_prompts = mLama_util.mask_sentences([mono_prompts], obj_token_lengths,tokenizer)[0]
-    mono_inputs = tokenizer(mono_prompts, padding=True, truncation=True)
+    mono_inputs = tokenizer(mono_prompts)
     labels = template.replace("[X]", sub_label).replace("[Y]", obj_label)
-    labels = tokenizer(labels, padding=True, truncation=True)["input_ids"]
-    for k, v in enumerate(labels):
+    labels = tokenizer(labels)["input_ids"]
+    for k, v in enumerate(mono_inputs["input_ids"]):
         if v != tokenizer.mask_token_id:
             labels[k] = -100
     mono_inputs['labels'] = labels
+
 
     return mono_inputs
 
