@@ -36,7 +36,7 @@ class EWC(object):
             self._means[n] = variable(p.data)
         wiki =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
         self.KB = wiki.map(
-                lambda examples: tokenize_wiki_examples(examples, tokenizer),
+                lambda examples: tokenize_wiki_examples(examples),
                 batched=True,
                 remove_columns=wiki.column_names,
             )
@@ -136,8 +136,8 @@ def tokenize_mlama_examples(examples, tokenizer):
     return mono_inputs
 
 
-def tokenize_wiki_examples(examples, tokenizer):
-    return tokenizer(examples["text"], padding=True, truncation=True)
+def tokenize_wiki_examples(examples):
+    return examples["text"]
 
 
 def load_training_validation_dataset(tokenizer):
