@@ -9,7 +9,7 @@ from transformers import (
     Trainer,
     AutoModelForMaskedLM,
     TrainingArguments,
-    DataCollatorWithPadding,
+    DataCollatorForTokenClassification,
 )
 from torch.utils.data import SequentialSampler
 from datasets import Dataset, load_dataset
@@ -131,8 +131,6 @@ def tokenize_mlama_examples(examples, tokenizer):
     except Exception:
         pass
     mono_inputs['labels'] = labels
-
-
     return mono_inputs
 
 
@@ -175,7 +173,7 @@ def train(args):
     model = AutoModelForMaskedLM.from_pretrained(args.model_name).to("cuda")
 
 
-    data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
+    data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)
     training_args = load_training_arguments(args.training_config_json)
     EWC_base = EWC(model, tokenizer)
