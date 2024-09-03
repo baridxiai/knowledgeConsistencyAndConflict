@@ -23,7 +23,6 @@ from tools import mLama_util
 from models.modelWrapper import EncoderWrapper
 
 # Training
-KB =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
 class EWC(object):
     def __init__(self, model, tokenizer):
 
@@ -36,6 +35,7 @@ class EWC(object):
         for n, p in deepcopy(self.params).items():
             self._means[n] = variable(p.data)
         self._precision_matrices = self._diag_fisher()
+        KB =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
         self.KB =  KB.map(
                 lambda examples: tokenize_wiki_examples(examples, tokenizer),
                 batched=True,
@@ -48,10 +48,10 @@ class EWC(object):
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
             precision_matrices[n] = variable(p.data)
-        batch_cnt = len(KB)//batch_size
+        batch_cnt = len(self.KB)//batch_size
 
         for i in range(0, batch_cnt):
-            batch = KB[i*64:min((i+1)*64, len(self.KB))]
+            batch = self.KB[i*64:min((i+1)*64, len(self.KB))]
             self.modelWrapper.inference_cloze_grads(batch, batch_size)
             for n, p in self.modelWrapper.model.named_parameters():
                 precision_matrices[n].data += p.grad.data**2 / batch_cnt
