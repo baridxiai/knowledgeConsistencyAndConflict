@@ -24,7 +24,6 @@ from models.modelWrapper import EncoderWrapper
 
 # Training
 KB =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-
 class EWC(object):
     def __init__(self, model, tokenizer):
 
@@ -37,6 +36,11 @@ class EWC(object):
         for n, p in deepcopy(self.params).items():
             self._means[n] = variable(p.data)
         self._precision_matrices = self._diag_fisher()
+        self.KB =  KB.map(
+                lambda examples: tokenize_wiki_examples(examples, tokenizer),
+                batched=True,
+                remove_columns=KB.column_names,
+            )
 
     def _diag_fisher(self):
         batch_size = 128
@@ -47,7 +51,7 @@ class EWC(object):
         batch_cnt = len(KB)//batch_size
 
         for i in range(0, batch_cnt):
-            batch = KB[i*64:min((i+1)*64, len(KB))]
+            batch = KB[i*64:min((i+1)*64, len(self.KB))]
             self.modelWrapper.inference_cloze_grads(batch, batch_size)
             for n, p in self.modelWrapper.model.named_parameters():
                 precision_matrices[n].data += p.grad.data**2 / batch_cnt
@@ -123,8 +127,8 @@ def tokenize_mlama_examples(examples, tokenizer):
     mono_prompts = mLama_util.mask_sentences([mono_prompts], obj_token_lengths,tokenizer)[0]
     mono_inputs = tokenizer(mono_prompts, padding=True, truncation=True)
     labels = template.replace("[X]", sub_label).replace("[Y]", obj_label)
-    labels = tokenizer(labels, padding=True, truncation=True)
-    for k, v in enumerate(mono_inputs['input_ids']):
+    labels = tokenizer(labels, padding=True, truncation=True)["input_ids"]
+    for k, v in enumerate(labels):
         if v != tokenizer.mask_token_id:
             labels[k] = -100
     mono_inputs['labels'] = labels
