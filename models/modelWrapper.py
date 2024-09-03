@@ -1001,13 +1001,13 @@ class EncoderWrapper:
         self.model.eval()
         self.model.zero_grad()
 
-        batch = self.tokenizer(batch,padding=True, truncation=True,return_tensors='pt').to("cuda")
-        batch["input_ids"], batch["labels"] = DataCollatorForLanguageModeling(self.tokenizer).torch_mask_tokens(batch["input_ids"], None)
+        batch = self.tokenizer(batch,padding=True, truncation=True,return_tensors='pt').to("cpu")
+        batch["input_ids"], batch["labels"] = DataCollatorForLanguageModeling(self.tokenizer).torch_mask_tokens(batch["input_ids"].to("cpu"), None)
 
         # Get tokenized object entities
 
         # Do n-gram masking
-        loss = self.model(**batch)['loss']
+        loss = self.model(**batch.to("cupda"))['loss']
         loss.backward()
         return loss
     def inference_mlama_cloze_grads(self, batch: List[Dict], batch_size: int = 64):
