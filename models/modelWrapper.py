@@ -1001,7 +1001,7 @@ class EncoderWrapper:
         self.model.eval()
         self.model.zero_grad()
 
-        batch = self.tokenizer(batch,padding=True, truncation=True,return_tensors='pt').to("cpu")
+        batch = self.tokenizer(batch,padding=True, truncation=True,max_length=256,return_tensors='pt').to("cpu")
         batch["input_ids"], batch["labels"] = DataCollatorForLanguageModeling(self.tokenizer).torch_mask_tokens(batch["input_ids"].to("cpu"), None)
 
         # Get tokenized object entities

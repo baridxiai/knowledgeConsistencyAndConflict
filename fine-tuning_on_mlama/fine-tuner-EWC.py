@@ -39,7 +39,7 @@ class EWC(object):
         self._precision_matrices = self._diag_fisher()
 
     def _diag_fisher(self):
-        batch_size = 128
+        batch_size = 32
         precision_matrices = {}
         for n, p in deepcopy(self.params).items():
             p.data.zero_()
