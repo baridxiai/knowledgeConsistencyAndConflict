@@ -34,7 +34,7 @@ class EWC(object):
         self._means = {}
         for n, p in deepcopy(self.params).items():
             self._means[n] = variable(p.data)
-        wiki =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        wiki =  load_dataset("wikitext", "wikitext-2-raw-v1", split="test").to("cuda")
         self.KB = wiki['text']
         self._precision_matrices = self._diag_fisher()
 
