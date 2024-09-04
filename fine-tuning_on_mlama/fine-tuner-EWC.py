@@ -134,7 +134,7 @@ def tokenize_mlama_examples(examples, tokenizer):
 
 def tokenize_wiki_examples(examples, tokenizer):
     batch = tokenizer(
-        examples, padding=True, truncation=True, max_length=256, return_tensors="pt"
+        examples["text"], padding=True, truncation=True, max_length=256, return_tensors="pt"
     )
     batch["input_ids"], batch["labels"] = DataCollatorForLanguageModeling(
         tokenizer
