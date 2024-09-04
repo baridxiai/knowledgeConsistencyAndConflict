@@ -10,6 +10,7 @@ from transformers import (
     AutoModelForMaskedLM,
     TrainingArguments,
     DataCollatorForTokenClassification,
+    DataCollatorForLanguageModeling
 )
 from torch.utils.data import SequentialSampler
 from datasets import Dataset, load_dataset
@@ -123,7 +124,7 @@ def tokenize_mlama_examples(examples, tokenizer):
     mono_prompts = mLama_util.mask_sentences([mono_prompts], obj_token_lengths,tokenizer)[0]
     mono_inputs = tokenizer(mono_prompts)
     labels = template.replace("[X]", sub_label).replace("[Y]", obj_label)
-    labels = tokenizer(labels,padding='max_length', max_length=len(mono_inputs["input_ids"], truncation=True))["input_ids"]
+    labels = tokenizer(labels,padding='max_length', max_length=len(mono_inputs["input_ids"]), truncation=True)["input_ids"]
     for k, v in enumerate(mono_inputs["input_ids"]):
         if v != tokenizer.mask_token_id:
             labels[k] = -100
@@ -132,7 +133,13 @@ def tokenize_mlama_examples(examples, tokenizer):
 
 
 def tokenize_wiki_examples(examples, tokenizer):
-    return tokenizer(examples["text"], padding=True, truncation=True)
+    batch = tokenizer(
+        examples, padding=True, truncation=True, max_length=256, return_tensors="pt"
+    )
+    batch["input_ids"], batch["labels"] = DataCollatorForLanguageModeling(
+        tokenizer
+    ).torch_mask_tokens(batch["input_ids"], None)
+    return batch
 
 
 def load_training_validation_dataset(tokenizer):
@@ -168,8 +175,6 @@ def non_shuffle(self, span):
 def train(args):
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForMaskedLM.from_pretrained(args.model_name).to("cuda")
-
-
     data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
     train_dataset, val_dataset = load_training_validation_dataset(tokenizer)
     training_args = load_training_arguments(args.training_config_json)
