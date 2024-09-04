@@ -94,7 +94,7 @@ class EWC_Trainer(Trainer):
         else:
             loss = re
         ewc_penality = self.EWC_base.penalty(self.model)
-        loss += ewc_penality*100
+        loss += ewc_penality*1e9
         return (loss, outputs) if return_outputs else loss
 
 
@@ -145,7 +145,7 @@ def tokenize_wiki_examples(examples, tokenizer):
 def load_training_validation_dataset(tokenizer):
     #  mlama 53 is sorted in order of statements.
     m_lama = m_lama = load_dataset("m_lama")["test"].shuffle(seed=42)
-    #m_lama = m_lama.filter(lambda x: x["language"] !="en")
+    m_lama = m_lama.filter(lambda x: x["language"] not in ["en","ar","id","ta"])
     val_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
     tokenized_train = m_lama.map(
         lambda examples: tokenize_mlama_examples(examples, tokenizer),
