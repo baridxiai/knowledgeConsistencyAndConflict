@@ -1,5 +1,5 @@
 {
-    "output_dir":"./model_checkpoint_finetuner_base_isolated",
+    "output_dir":"./model_checkpoint_finetuner_EWC_wikiKB_isolated",
     "per_device_train_batch_size":64,
     "per_gpu_eval_batch_size":30,
     "overwrite_output_dir":true,
