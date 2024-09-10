@@ -1,5 +1,4 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 import collections, re, string
 
