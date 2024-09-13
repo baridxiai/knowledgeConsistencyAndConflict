@@ -1,14 +1,14 @@
 import pickle
 from argparse import ArgumentParser
-from eval import *
 from tqdm.contrib import tzip
+import numpy as np
 
 import plotly.graph_objects as go
 import plotly.express as px
+from eval import compute_rankc, compute_accuracy_top_n
 
 
-
-def visualize_consistency(args):
+def visualize_layerwise_crosslingual_consistencies(args):
     fig_rankC = go.Figure()
     fig_accuracy = go.Figure()
 
@@ -40,4 +40,4 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    visualize_consistency(args)
+    visualize_layerwise_crosslingual_consistencies(args)

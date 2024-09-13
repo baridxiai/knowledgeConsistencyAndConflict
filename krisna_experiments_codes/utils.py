@@ -59,6 +59,8 @@ def load_mlama(matrix_lang: str, target_lang: str):
             if m_lama_id not in m_lama_dict:
                 m_lama_dict[m_lama_id] = dict()
             m_lama_dict[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(data['sub_label'])
+            m_lama_dict[m_lama_id]['obj_label_cross_lang'] = add_punctuations_whitespace(data['obj_label'])
+        
+    mlama_instances = [instance for instance in m_lama_dict.values() if 'subj_label_cross_lang' in instance and 'subj_label_same_lang' in instance] # filter out any subject that doesn't have its parallel subject 
 
-    mlama_instances = [instance for instance in m_lama_dict.values() if 'subj_label_cross_lang' in instance and 'subj_label_same_lang' in instance] # filter out any subject that doesn't have its parallel subject
     return mlama_instances
