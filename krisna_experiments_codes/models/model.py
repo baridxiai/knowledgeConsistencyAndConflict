@@ -1493,22 +1493,7 @@ class DecoderLensWrapper:
             
             mono_inputs = self.tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt')
             cs_inputs = self.tokenizer(cs_prompts, padding=True, truncation=True, return_tensors='pt')
-
-            
-            mono_inputs_new = dict()
-            for key, val in mono_inputs.items():
-                val = torch.Tensor([val[idx] for idx in mono_input_space_indices]).to(val.device)
-                mono_inputs_new[key] = val
-
-            cs_inputs_new = dict()
-            for key, val in cs_inputs.items():
-                val = torch.Tensor([val[idx] for idx in cs_input_space_indices]).to(val.device)
-                cs_inputs_new[key] = val
-            
-            mono_inputs = mono_inputs_new
-            cs_inputs = cs_inputs_new
-
-
+ 
             # find subject entity span positions
             mono_subj_spans = self._find_span(mono_inputs['input_ids'], all_mono_subj_tokens, False)
             cs_subj_spans = self._find_span(cs_inputs['input_ids'], all_cs_subj_tokens, False)
