@@ -231,36 +231,6 @@ class EncoderWrapper:
             if head_pos not in attention_weights_per_layer[layer]:
                 attention_weights_per_layer[layer][head_pos] = []
             attention_weights_per_layer[layer][head_pos].append(attention_weight_avg)
-    
-    def __remove_blank_string(self, tokenized_inputs) -> Dict[str, torch.Tensor]:
-        """
-        Remove any blank string that could be problematic for processing string
-        """
-        processed_tokenized_inputs = dict()
-        all_non_blank_token_ids = []
-        max_len = -1
-        
-        for batch_input_ids in tokenized_inputs['input_ids']:
-            non_blank_token_ids = []
-            for idx, token_id in enumerate(batch_input_ids):
-                if self.tokenizer.decode(token_id).strip() != '':
-                    non_blank_token_ids.append(idx)
-            all_non_blank_token_ids.append(non_blank_token_ids)
-            if len(non_blank_token_ids) > max_len:
-                max_len = len(non_blank_token_ids)
-        
-        for key, batched_vals in tokenized_inputs:
-            for batch_idx, batched_items in enumerate(batched_vals):
-
-                batched_items[batch_idx] = [val for idx, val in enumerate(batched_items[batch_idx]) if idx in all_non_blank_token_ids[batch_idx]]
-                if len(batched_items[batch_idx]) < max_len:
-                    if key == 'input_ids':
-                        batched_items[batch_idx] = batched_items[batch_idx]+[self.tokenizer.pad_token_id]*(max_len-len(batched_items[batch_idx]))
-                    elif key == 'attention_mask':
-                        batched_items[batch_idx] = batched_items[batch_idx]+[0]*(max_len-len(batched_items[batch_idx]))          
-                    else:
-                        batched_items[batch_idx] = batched_items[batch_idx]+[batched_items[batch_idx][-1]]*(max_len-len(batched_items[batch_idx]))   
-
 
     def extract_attention_scores_subj_obj(self, instances: List[Dict], batch_size: int =16, selected_layers: List[int] =[]) -> Dict[int, Dict[int, float]]:
         """
@@ -1493,7 +1463,8 @@ class DecoderLensWrapper:
             
             mono_inputs = self.tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt')
             cs_inputs = self.tokenizer(cs_prompts, padding=True, truncation=True, return_tensors='pt')
- 
+
+
             # find subject entity span positions
             mono_subj_spans = self._find_span(mono_inputs['input_ids'], all_mono_subj_tokens, False)
             cs_subj_spans = self._find_span(cs_inputs['input_ids'], all_cs_subj_tokens, False)
@@ -1522,8 +1493,12 @@ class DecoderLensWrapper:
                 for batch_idx in range(len(batch)):
                     # calculate subject-object attention for monolingual input
                     mono_tokens_attention = mono_attentions_spec_layer[batch_idx]
+                    mono_start_obj_idx = mono_obj_spans[batch_idx][0]
+                    mono_end_obj_idx = mono_obj_spans[batch_idx][-1]
+                    mono_start_subj_idx = mono_subj_spans[batch_idx][0] 
+                    mono_end_subj_idx = mono_subj_spans[batch_idx][-1]
                     self._calculate_subj_obj_attention_per_instance(mono_tokens_attention, mono_attention_weights_per_layer, layer
-                                                                    , mono_obj_spans[batch_idx], mono_subj_spans[batch_idx])
+                                                                    , mono_start_obj_idx, mono_end_obj_idx, mono_start_subj_idx, mono_end_subj_idx)
                     
                     # calculate subject-object attention for codemixed input
                     cs_tokens_attention = cs_attention_spec_layer[batch_idx]
@@ -1532,7 +1507,7 @@ class DecoderLensWrapper:
                     cs_start_subj_idx = cs_subj_spans[batch_idx][0] 
                     cs_end_subj_idx = cs_subj_spans[batch_idx][-1]
                     self._calculate_subj_obj_attention_per_instance(cs_tokens_attention, cs_attention_weights_per_layer, layer
-                                                                    , cs_obj_spans[batch_idx], cs_subj_spans[batch_idx])
+                                                                    , cs_start_obj_idx, cs_end_obj_idx, cs_start_subj_idx, cs_end_subj_idx)
           
         # accumulate all attentions for every layer
         for layer in selected_layers:
