@@ -4,6 +4,7 @@ import copy
 import json
 import math
 import logging
+import pdb
 
 import torch
 from torch import nn
@@ -221,8 +222,9 @@ class BertIntermediate(nn.Module):
         hidden_states = self.dense(hidden_states)
         hidden_states = self.intermediate_act_fn(hidden_states)  # [batch, max_len, nslot]
         if tmp_score is not None:
-            for batch_idx in range(len(tmp_score)):
-                hidden_states[batch_idx, tgt_pos[batch_idx], :] = tmp_score[batch_idx]
+            batch_positions = [[batch_idx] for batch_idx in range(len(tmp_score))]
+            tgt_positions =  [[tgt_pos[batch_idx]] for batch_idx in range(len(tmp_score))]
+            hidden_states[batch_positions, tgt_positions, :] = tmp_score.unsqueeze(1)
         return hidden_states
 
 
@@ -259,23 +261,23 @@ class BertEncoder(nn.Module):
         super(BertEncoder, self).__init__()
         self.layer = nn.ModuleList([BertLayer(config) for _ in range(config.num_hidden_layers)])
 
-    def forward(self, hidden_states, attention_mask, tgt_layers=None, tgt_pos: List[int] = None, all_tmp_scores: Dict[int, torch.Tensor] = None, suppression_constant: float = None, subject_tokens_position: List[List[int]] = None):
+    def forward(self, hidden_states, attention_mask, tgt_layers=None, tgt_pos: List[int] = None, all_tmp_scores: Dict[int, torch.Tensor] = None, suppression_constant: float = None, subject_tokens_positions: List[List[int]] = None):
         all_encoder_layers = []
         all_ffn_weights = dict()
         for layer_index, layer_module in enumerate(self.layer):
-                if layer_index not in all_tmp_scores:
+                if all_tmp_scores is None or layer_index not in all_tmp_scores:
                     tmp_score = None
                 else:
                     tmp_score = all_tmp_scores[layer_index]
 
                 if layer_index in tgt_layers:
                     hidden_states, ffn_weights = layer_module(hidden_states, attention_mask, tgt_pos=tgt_pos, tmp_score=tmp_score
-                                                              , suppression_constant=suppression_constant, subject_tokens_position=subject_tokens_position)
+                                                              , suppression_constant=suppression_constant, subject_tokens_positions=subject_tokens_positions)
                     all_ffn_weights[layer_index] = ffn_weights
                 else:
                     hidden_states, _ = layer_module(hidden_states, attention_mask, tgt_pos=tgt_pos, tmp_score=tmp_score
-                                                    , suppression_constant=suppression_constant, subject_tokens_position=subject_tokens_position)
-        all_encoder_layers.append(hidden_states)
+                                                    , suppression_constant=suppression_constant, subject_tokens_positions=subject_tokens_positions)
+                all_encoder_layers.append(hidden_states)
         return all_encoder_layers, all_ffn_weights
 
 
@@ -416,15 +418,14 @@ class BertModel(PreTrainedBertModel):
 
     def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, tgt_pos: List[int] = None, tgt_layers=None, all_tmp_scores: Dict[int, torch.Tensor] = None, suppression_constant: float = None, subject_tokens_positions: List[List[int]] = None):
         if attention_mask is None:
-            attention_mask = torch.ones_like(input_ids)
+            attention_mask = torch.ones_like(input_ids).to('cuda')
         if token_type_ids is None:
-            token_type_ids = torch.zeros_like(input_ids)
+            token_type_ids = torch.zeros_like(input_ids).to('cuda')
 
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
 
         extended_attention_mask = extended_attention_mask.to(dtype=next(self.parameters()).dtype)  # fp16 compatibility
         extended_attention_mask = (1.0 - extended_attention_mask) * -10000.0
-
         embedding_output = self.embeddings(input_ids, token_type_ids)
         encoded_layers, all_ffn_weights = self.encoder(embedding_output,
                                     extended_attention_mask,
@@ -447,10 +448,16 @@ class BertForMaskedLM(PreTrainedBertModel):
         self.apply(self.init_bert_weights)
 
     def forward(self, input_ids, token_type_ids=None, attention_mask=None
-                , tgt_pos: List[int] = None, tgt_layers=None
+                , tgt_pos: List[int] = None, tgt_layers: List[int]=None
                 , all_tmp_scores: Dict[int, torch.Tensor] = None
                 , suppression_constant: float = None, subject_tokens_positions: List[List[int]] = None
                 , tgt_label=None, calculate_grad=False):
+        
+        # we only use one layer as of now for ig2 grad calculation
+        if calculate_grad and len(tgt_layers)!=1:
+            raise ValueError("we only support IG2 gradient for one layer as of now")
+
+        # expand to the batch of gradietn chunks
         if all_tmp_scores is not None and calculate_grad:
             tmp_score = all_tmp_scores[tgt_layers[0]]
             batch_size = tmp_score.shape[0]
@@ -459,16 +466,24 @@ class BertForMaskedLM(PreTrainedBertModel):
                 token_type_ids = token_type_ids.repeat(batch_size, 1)
             if attention_mask is not None:
                 attention_mask = attention_mask.repeat(batch_size, 1)
+            if len(tgt_pos) == 1:
+                tgt_pos = [tgt_pos[0]]*batch_size
+
         last_hidden, all_ffn_weights, hidden_states = self.bert(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
                                                                 , tgt_pos=tgt_pos, tgt_layers=tgt_layers, all_tmp_scores=all_tmp_scores, suppression_constant=suppression_constant
                                                                 , subject_tokens_positions=subject_tokens_positions)  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
-        for batch_idx in range(len(last_hidden)):
-            last_hidden[batch_idx] = last_hidden[batch_idx, tgt_pos[batch_idx], :]  # (batch, hidden_size)
-        for layer_idx in all_ffn_weights.keys():
-            for batch_idx in range(len(all_ffn_weights[layer_idx])):
-                all_ffn_weights[layer_idx][batch_idx] = all_ffn_weights[layer_idx][batch_idx, tgt_pos[batch_idx], :]  # (batch, ffn_size)
+    
+        batch_positions = [[batch_idx] for batch_idx in range(len(last_hidden))]
+        tgt_positions = [[tgt_pos[batch_idx]] for batch_idx in range(len(last_hidden))]
         
+        for layer_idx in all_ffn_weights.keys():
+            batch_positions = [[batch_idx] for batch_idx in range(len(all_ffn_weights[layer_idx]))]
+            tgt_positions = [[tgt_pos[batch_idx]] for batch_idx in range(len(all_ffn_weights[layer_idx]))]
+            all_ffn_weights[layer_idx] = all_ffn_weights[layer_idx][batch_positions, tgt_positions, :].squeeze(1)  # (batch, ffn_size)
+        
+        last_hidden = last_hidden[batch_positions, tgt_positions, :].squeeze(1)  # (batch, hidden_size)
         tgt_logits = self.cls(last_hidden)  # (batch, n_vocab)
+        
         tgt_prob = F.softmax(tgt_logits, dim=1)  # (batch, n_vocab)
         
         if not calculate_grad or all_tmp_scores is None:
