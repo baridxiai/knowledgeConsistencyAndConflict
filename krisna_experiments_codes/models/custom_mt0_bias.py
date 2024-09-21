@@ -193,7 +193,9 @@ class MT0DenseActDense(nn.Module):
 
         # add neuron intervention
         if modified_activation_values is not None and tgt_pos is not None:
-            intermediate_states[:, tgt_pos, :] = modified_activation_values
+            batch_positions = [[batch_idx] for batch_idx in range(len(modified_activation_values))]
+            tgt_positions =  [[tgt_pos[batch_idx]] for batch_idx in range(len(modified_activation_values))]
+            intermediate_states[batch_positions, tgt_positions, :] = modified_activation_values.unsqueeze(1)
         hidden_states = self.dropout(intermediate_states)
 
         hidden_states = self.wo(hidden_states)
@@ -212,9 +214,12 @@ class MT0DenseGatedActDense(nn.Module):
         hidden_gelu = self.act(self.wi_0(hidden_states))
         hidden_linear = self.wi_1(hidden_states)
         intermediate_states = hidden_gelu * hidden_linear
+        
         # add neuron intervention
         if modified_activation_values is not None and tgt_pos is not None:
-            intermediate_states[:, tgt_pos, :] = modified_activation_values
+            batch_positions = [[batch_idx] for batch_idx in range(len(modified_activation_values))]
+            tgt_positions =  [[tgt_pos[batch_idx]] for batch_idx in range(len(modified_activation_values))]
+            intermediate_states[batch_positions, tgt_positions, :] = modified_activation_values.unsqueeze(1)
         hidden_states = self.dropout(intermediate_states)
 
         hidden_states = self.wo(hidden_states)
@@ -437,7 +442,7 @@ class MT0Attention(nn.Module):
         # Causal intervention on attention weight
         if suppression_constant is not None:
             for batch_idx in range(len(attn_weights)):
-                attn_weights[batch_idx, :, tgt_pos, subject_tokens_positions] *= suppression_constant
+                attn_weights[batch_idx, :, tgt_pos[batch_idx], subject_tokens_positions[batch_idx]] *= suppression_constant
 
         attn_weights = nn.functional.dropout(
             attn_weights, p=self.dropout, training=self.training
@@ -957,7 +962,7 @@ class MT0Stack(MT0PreTrainedModel):
         past_key_values=None,
         use_cache=None,
         output_attentions=None,
-        output_hidden_states=None,
+        output_hidden_states=True,
         return_dict=None,
         all_modified_activation_values: Dict[int, torch.Tensor]=None,
         tgt_pos = None,
@@ -1042,6 +1047,10 @@ class MT0Stack(MT0PreTrainedModel):
             cross_attn_layer_head_mask = cross_attn_head_mask[i]
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
+            if all_modified_activation_values is None or i not in all_modified_activation_values:
+                tmp_score = None
+            else:
+                tmp_score = all_modified_activation_values[i]
             if tgt_layers is not None and i in tgt_layers:
                 layer_outputs = layer_module(
                     hidden_states,
@@ -1055,7 +1064,7 @@ class MT0Stack(MT0PreTrainedModel):
                     past_key_value=past_key_value,
                     use_cache=use_cache,
                     output_attentions=output_attentions,
-                    modified_activation_values=all_modified_activation_values[i],
+                    modified_activation_values=tmp_score,
                     suppression_constant=suppression_constant,
                     subject_tokens_positions=subject_tokens_positions,
                     tgt_pos = tgt_pos
@@ -1078,6 +1087,7 @@ class MT0Stack(MT0PreTrainedModel):
                     subject_tokens_positions=subject_tokens_positions,
                     tgt_pos = tgt_pos
                 )
+
             # layer_outputs is a tuple with:
             # hidden-states, ffn-states, key-value-states, (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights)
             if use_cache is False:
@@ -1414,10 +1424,17 @@ class MT0ForConditionalGeneration(MT0PreTrainedModel):
             if self.config.num_layers == self.config.num_decoder_layers:
                 decoder_head_mask = head_mask
         
+        # For now we only support one layer patch for gradient calculation
+        if calculate_gradient and len(tgt_layers) != 1:
+            raise ValueError("IG2 gradient calculation only supports one layer patching for now!")
+
+        # Expand the batch size wrt to the batch of gradients
         if all_modified_activation_values is not None and calculate_gradient:
             batch_size = all_modified_activation_values[tgt_layers[0]].shape[0]
             input_ids = input_ids.repeat(batch_size, 1)
             attention_mask = attention_mask.repeat(batch_size, 1)
+            if len(encoder_tgt_pos) == 1:
+                encoder_tgt_pos = [encoder_tgt_pos[0]]*batch_size
 
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
@@ -1428,7 +1445,7 @@ class MT0ForConditionalGeneration(MT0PreTrainedModel):
                 inputs_embeds=inputs_embeds,
                 head_mask=head_mask,
                 output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
+                output_hidden_states=True,
                 return_dict=return_dict,
                 all_modified_activation_values = all_modified_activation_values,
                 tgt_pos = encoder_tgt_pos,
@@ -1467,14 +1484,14 @@ class MT0ForConditionalGeneration(MT0PreTrainedModel):
             encoder_attention_mask=attention_mask,
             head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
+            suppression_constant = None,
             use_cache=use_cache,
             output_attentions=output_attentions,
-            output_hidden_states=True,
+            output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             tgt_pos = None,
             tgt_layers = None
         )
-
         sequence_output = decoder_outputs[0]
         encoder_hidden_states = encoder_outputs[3]
 
@@ -1483,13 +1500,13 @@ class MT0ForConditionalGeneration(MT0PreTrainedModel):
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
             sequence_output = sequence_output * (self.model_dim**-0.5)
         
-        # for batch_idx in range(len(decoder_tgt_positions)):
-        #     sequence_output[batch_idx] = sequence_output[batch_idx, decoder_tgt_positions[batch_idx], :]
         last_hidden = sequence_output
 
         ffn_states_per_layer = dict()
         for layer in tgt_layers:
-            ffn_states_per_layer[layer] = encoder_outputs[1][layer][:, encoder_tgt_pos, :]
+            batch_positions = [[idx] for idx in range(len(encoder_tgt_pos))]
+            encoder_tgt_positions = [[val] for val in encoder_tgt_pos]
+            ffn_states_per_layer[layer] = encoder_outputs[1][layer][batch_positions, encoder_tgt_positions, :].squeeze(1)
         tgt_logits = self.lm_head(last_hidden)
         tgt_proba = F.softmax(tgt_logits, dim=-1)
         if not calculate_gradient or all_modified_activation_values is None:

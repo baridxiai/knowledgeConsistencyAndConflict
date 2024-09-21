@@ -1,16 +1,15 @@
 # Adapted implementation from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/1_analyze_mlm_bias.py\
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 from argparse import ArgumentParser
 import torch
 from tqdm import tqdm
 from datasets import load_dataset
 from tqdm import tqdm
 import pickle
-from transformers import AutoTokenizer,AutoModelForMaskedLM
+import re 
+from transformers import AutoTokenizer
 import numpy as np
-#from custom_mt0_bias import MT0ForConditionalGeneration
-from models.custom_bert_bias import BertForMaskedLM
+from custom_mt0_bias import MT0ForConditionalGeneration
+from custom_bert_bias import BertForMaskedLM
 from utils import load_mlama
 from typing import Union, List, Dict
 
@@ -74,8 +73,7 @@ def main(args):
     if args.model_type == 'encoder-decoder':
         model = MT0ForConditionalGeneration.from_pretrained(args.model_name)
     else:
-        #model = BertForMaskedLM.from_pretrained(args.model_name)
-        model = BertForMaskedLM.from_pretrained("../model_checkpoint_finetuner_BATCH_with_diff_lang/checkpoint-6000").to("cuda") 
+        model = BertForMaskedLM.from_pretrained(args.model_name)
 
     model.to('cuda')
     mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang)
@@ -108,7 +106,7 @@ def main(args):
             tokenized_instance_cs_template = tokenizer(instance_cs_template, return_tensors='pt', padding=False).to('cuda')
 
             # monolingual ig2
-            _, mono_ffn_states_per_layer = model(**tokenized_instance_mono_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=args.probed_layers, encoder_tgt_pos = extra_token_position_mono, decoder_tgt_positions = obj_token_positions, tgt_labels=labels)
+            _, mono_ffn_states_per_layer, _ = model(**tokenized_instance_mono_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=args.probed_layers, encoder_tgt_pos = [extra_token_position_mono], decoder_tgt_positions = [obj_token_positions], tgt_labels=labels)
             for key, ffn_states in mono_ffn_states_per_layer.items():
                 ffn_states = ffn_states.squeeze(1)
                 scaled_weights, weights_step = scaled_input(ffn_states, args.integration_batch_size, args.integration_num_batch)  # (num_points, ffn_size), (ffn_size)
@@ -116,7 +114,10 @@ def main(args):
                 ig2_mono = None
                 for batch_idx in range(args.integration_num_batch):
                     batch_weights = scaled_weights[batch_idx * args.integration_batch_size:(batch_idx + 1) * args.integration_batch_size]
-                    _, grad = model(**tokenized_instance_mono_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=[key], modified_activation_values = batch_weights, encoder_tgt_pos = extra_token_position_mono, decoder_tgt_positions = obj_token_positions, tgt_labels=labels)  # (batch, n_vocab), (batch, ffn_size)
+                    all_batch_weights = {
+                            key: batch_weights
+                    }
+                    _, grad = model(**tokenized_instance_mono_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=[key], all_modified_activation_values = all_batch_weights, encoder_tgt_pos = [extra_token_position_mono], decoder_tgt_positions = [obj_token_positions], tgt_labels=labels, calculate_gradient=True)  # (batch, n_vocab), (batch, ffn_size)
                     grad = grad.sum(axis=0)  # (ffn_size)
                     ig2_mono = grad if ig2_mono is None else np.add(ig2_mono, grad) # (ffn_size)
                 ig2_mono = ig2_mono*weights_step
@@ -126,7 +127,7 @@ def main(args):
                     mono_ig2_avg_per_layer[key] = np.add(mono_ig2_avg_per_layer[key] , ig2_mono.squeeze(0))
             
             # codemixed ig2
-            _, cs_ffn_states_per_layer = model(**tokenized_instance_cs_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=args.probed_layers, encoder_tgt_pos = extra_token_position_cs, decoder_tgt_positions = obj_token_positions, tgt_labels=labels)
+            _, cs_ffn_states_per_layer, _ = model(**tokenized_instance_cs_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=args.probed_layers, encoder_tgt_pos = [extra_token_position_cs], decoder_tgt_positions = [obj_token_positions], tgt_labels=labels)
             for key, ffn_states in cs_ffn_states_per_layer.items():
                 ffn_states = ffn_states.squeeze(1)
                 scaled_weights, weights_step = scaled_input(ffn_states, args.integration_batch_size, args.integration_num_batch)  # (num_points, ffn_size), (ffn_size)
@@ -134,7 +135,10 @@ def main(args):
                 ig2_cs = None
                 for batch_idx in range(args.integration_num_batch):
                     batch_weights = scaled_weights[batch_idx * args.integration_batch_size:(batch_idx + 1) * args.integration_batch_size]
-                    _, grad = model(**tokenized_instance_cs_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=[key], modified_activation_values = batch_weights, encoder_tgt_pos = extra_token_position_cs, decoder_tgt_positions = obj_token_positions, tgt_labels=labels)  # (batch, n_vocab), (batch, ffn_size)
+                    all_batch_weights = {
+                            key: batch_weights
+                    }
+                    _, grad = model(**tokenized_instance_cs_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=[key], all_modified_activation_values = all_batch_weights, encoder_tgt_pos = [extra_token_position_cs], decoder_tgt_positions = [obj_token_positions], tgt_labels=labels, calculate_gradient=True)  # (batch, n_vocab), (batch, ffn_size)
                     grad = grad.sum(axis=0)  # (ffn_size)
                     ig2_cs = grad if ig2_cs is None else np.add(ig2_cs, grad) # (ffn_size)
                 ig2_cs = ig2_cs*weights_step
@@ -166,13 +170,16 @@ def main(args):
                 mono_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in tokenized_instance_mono_template.items()}
                 ig2_mono = None
                 for curr_mask_pos in range(start_tgt_pos_mono, start_tgt_pos_mono+obj_tokens_len):
-                    ffn_states, _ = model(**mono_inputs_copy, tgt_layer=layer, tgt_pos = curr_mask_pos)
-                    scaled_weights, weights_step = scaled_input(ffn_states, args.integration_batch_size, args.integration_num_batch)  # (num_points, ffn_size), (ffn_size)
+                    ffn_states, _ , _= model(**mono_inputs_copy, tgt_layers=[layer], tgt_pos = [curr_mask_pos])
+                    scaled_weights, weights_step = scaled_input(ffn_states[layer], args.integration_batch_size, args.integration_num_batch)  # (num_points, ffn_size), (ffn_size)
                     scaled_weights.requires_grad_(True)
                     total_grad = None
                     for batch_idx in range(args.integration_num_batch):
                         batch_weights = scaled_weights[batch_idx * args.integration_batch_size:(batch_idx + 1) * args.integration_batch_size]
-                        _, grad = model(**mono_inputs_copy, tgt_layer=layer, tgt_pos = curr_mask_pos, tmp_score=batch_weights, tgt_label=obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_mono])  # (batch, n_vocab), (batch, ffn_size)
+                        all_batch_weights = {
+                            layer: batch_weights
+                        }
+                        _, grad = model(**mono_inputs_copy, tgt_layers=[layer], tgt_pos = [curr_mask_pos], all_tmp_scores=all_batch_weights, tgt_label=obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_mono], calculate_grad=True)  # (batch, n_vocab), (batch, ffn_size)
                         grad = grad.sum(axis=0)  # (ffn_size)
                         total_grad = grad if total_grad is None else np.add(total_grad, grad) # (ffn_size)
                     mono_inputs_copy['input_ids'][0][curr_mask_pos] = obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_mono]
@@ -188,13 +195,16 @@ def main(args):
                 cs_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in tokenized_instance_cs_template.items()}
                 ig2_cs = None
                 for curr_mask_pos in range(start_tgt_pos_cs, start_tgt_pos_cs+obj_tokens_len):
-                    ffn_states, _ = model(**cs_inputs_copy, tgt_layer=layer, tgt_pos = curr_mask_pos)
-                    scaled_weights, weights_step = scaled_input(ffn_states, args.integration_batch_size, args.integration_num_batch)  # (num_points, ffn_size), (ffn_size)
+                    ffn_states, _, _ = model(**cs_inputs_copy, tgt_layers=[layer], tgt_pos = [curr_mask_pos])
+                    scaled_weights, weights_step = scaled_input(ffn_states[layer], args.integration_batch_size, args.integration_num_batch)  # (num_points, ffn_size), (ffn_size)
                     scaled_weights.requires_grad_(True)
                     total_grad = None
                     for batch_idx in range(args.integration_num_batch):
                         batch_weights = scaled_weights[batch_idx * args.integration_batch_size:(batch_idx + 1) * args.integration_batch_size]
-                        _, grad = model(**cs_inputs_copy, tgt_layer=layer, tgt_pos = curr_mask_pos, tmp_score=batch_weights, tgt_label=obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_cs])  # (batch, n_vocab), (batch, ffn_size)
+                        all_batch_weights = {
+                            layer: batch_weights
+                        }
+                        _, grad = model(**cs_inputs_copy, tgt_layers=[layer], tgt_pos = [curr_mask_pos], all_tmp_scores=all_batch_weights, tgt_label=obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_cs], calculate_grad=True)  # (batch, n_vocab), (batch, ffn_size)
                         grad = grad.sum(axis=0)  # (ffn_size)
                         total_grad = grad if total_grad is None else np.add(total_grad, grad) # (ffn_size)
                     cs_inputs_copy['input_ids'][0][curr_mask_pos] = obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_cs]
@@ -210,8 +220,8 @@ def main(args):
         mono_ig2_avg_per_layer[layer] = np.divide(mono_ig2_avg_per_layer[layer], divider)           
         cs_ig2_avg_per_layer[layer] = np.divide(cs_ig2_avg_per_layer[layer], divider)  
     
-    mono_output_filepath = f"{args.output_prefix}-{args.source_lang}-{args.target_lang}-mono-ig2.pkl"
-    cs_output_filepath = f"{args.output_prefix}-{args.source_lang}-{args.target_lang}-cm-ig2.pkl"
+    mono_output_filepath = f"{args.output_prefix}-{args.matrix_lang}-{args.embedded_lang}-mono-ig2.pkl"
+    cs_output_filepath = f"{args.output_prefix}-{args.matrix_lang}-{args.embedded_lang}-cm-ig2.pkl"
 
     with open(mono_output_filepath, 'wb') as f:
         pickle.dump(mono_ig2_avg_per_layer, f)
