@@ -4,9 +4,11 @@ from tqdm.contrib import tzip
 import numpy as np
 
 import plotly.graph_objects as go
+import plotly.io as pio
 import plotly.express as px
 from eval import compute_rankc, compute_accuracy_top_n
 
+pio.kaleido.scope.mathjax = None
 
 def visualize_layerwise_crosslingual_consistencies(args):
     fig_rankC = go.Figure()
@@ -21,11 +23,26 @@ def visualize_layerwise_crosslingual_consistencies(args):
         layers = [key for key in data_obj.keys()]
         rankC = [compute_rankc(layer_out['cs_rank_preds'], layer_out['mono_rank_preds']) for layer_out in data_obj.values()]
         acc = [compute_accuracy_top_n(layer_out['cs_rank_preds'], layer_out['mono_rank_preds']) for layer_out in data_obj.values()]
+        if args.compressed:
+            # group all layers into three sections
+            #rankC
+            early_rankC = rankC[0:len(rankC)//3]
+            mid_rankC = rankC[len(rankC)//3:2*len(rankC)//3]
+            last_rankC = rankC[2*len(rankC)//3:]
+            rankC = [sum(early_rankC)/len(early_rankC), sum(mid_rankC)/len(mid_rankC), sum(last_rankC)/len(last_rankC)] 
+            layers = [i for i in range(len(rankC))]
+
+            #accuracy
+            early_acc = acc[0:len(acc)//3]
+            mid_acc = acc[len(acc)//3:2*len(acc)//3]
+            last_acc = acc[2*len(acc)//3:]
+            acc = [sum(early_acc)/len(early_acc), sum(mid_acc)/len(mid_acc), sum(last_acc)/len(last_acc)] 
         fig_rankC.add_trace(go.Scatter(x=layers, y=rankC, mode='lines', name=label_name))
         fig_accuracy.add_trace(go.Scatter(x=layers, y=acc, mode='lines', name=label_name))
-
-    fig_rankC.write_image(args.rankc_filepath)
-    fig_accuracy.write_image(args.acc_filepath)
+    pio.full_figure_for_development(fig_rankC, warn=False)
+    pio.full_figure_for_development(fig_accuracy, warn=False)
+    fig_rankC.write_image(args.rankc_filepath, engine="kaleido")
+    fig_accuracy.write_image(args.acc_filepath, engine="kaleido")
 
     
 
@@ -36,6 +53,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_name', type=str)
     parser.add_argument('--rankc_filepath', type=str)
     parser.add_argument('--acc_filepath', type=str)
+    parser.add_argument('--compressed', action='store_true', default=False, help='Group all layers into three sections (early, mid, later)')
 
 
     args = parser.parse_args()

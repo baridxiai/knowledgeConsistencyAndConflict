@@ -5,6 +5,7 @@ import plotly.io as pio
 import plotly.express as px
 import numpy as np
 from argparse import ArgumentParser
+pio.kaleido.scope.mathjax = None
 
 def visualize_mlp_bias(args):
     model = args.model
@@ -13,11 +14,11 @@ def visualize_mlp_bias(args):
     cm_inp_file = f'{args.ig2_folder}/mlama-{model}-{lang_pair}-cm-ig2.pkl'
     mono_inp_file = f'{args.ig2_folder}/mlama-{model}-{lang_pair}-mono-ig2.pkl'
 
-    mono_label = 'mono-en'
+    mono_label = 'en'
     cm_label = lang_pair
 
     plot_title = f'Average Activation Values\' Gradient Sum on Probability in {model} {lang_pair_title}'
-    filepath = f'figures/{model}-mlama-{lang_pair}-ffn-bias.png'
+    filepath = f'../../figures/{model}-mlama-{lang_pair}-ffn-bias.png'
 
     cm_inp_dict = None
     mono_inp_dict = None
@@ -79,8 +80,8 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str)
     parser.add_argument('--lang_pair', type=str, help='Language pair')
     parser.add_argument('--lang_pair_title', type=str, help='Language pair that is used for plot title')
-    parser.add_argument('--ig2_folder', type=str, help='Which folder containing the ig2 scores of all mlp neurons', default='analysis/factors')
-    parser.add_argument('--figures_folder', type=str, default='figures', help="Folder where we want to store figures output")
+    parser.add_argument('--ig2_folder', type=str, help='Which folder containing the ig2 scores of all mlp neurons', default='../factors')
+    parser.add_argument('--figures_folder', type=str, default='../../figures', help="Folder where we want to store figures output")
 
     args = parser.parse_args()
     visualize_mlp_bias(args)

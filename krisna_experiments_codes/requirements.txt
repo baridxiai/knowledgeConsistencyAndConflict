@@ -6,3 +6,4 @@ scipy
 plotly-express
 matplotlib
 numpy
+einops
