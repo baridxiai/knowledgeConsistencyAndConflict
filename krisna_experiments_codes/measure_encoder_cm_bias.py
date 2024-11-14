@@ -1,4 +1,6 @@
 # Adapted implementation from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/1_analyze_mlm_bias.py\
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "3,2"
 from argparse import ArgumentParser
 import torch
 from tqdm import tqdm
@@ -8,8 +10,8 @@ import pickle
 import re 
 from transformers import AutoTokenizer
 import numpy as np
-from custom_mt0_bias import MT0ForConditionalGeneration
-from custom_bert_bias import BertForMaskedLM
+from models.custom_mt0_bias import MT0ForConditionalGeneration
+from models.custom_bert_bias import BertForMaskedLM
 from utils import load_mlama
 from typing import Union, List, Dict
 
@@ -74,8 +76,13 @@ def main(args):
         model = MT0ForConditionalGeneration.from_pretrained(args.model_name)
     else:
         model = BertForMaskedLM.from_pretrained(args.model_name)
+    from accelerate import Accelerator
+    accelerator = Accelerator()
+    device = accelerator.device
+    model= accelerator.prepare(model)
 
-    model.to('cuda')
+#    model.to(device)
+
     mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang)
 
     extra_id_token = 250099

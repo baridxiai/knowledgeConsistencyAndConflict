@@ -14,8 +14,7 @@ def main(args):
     task_type = 'cloze'
     use_custom_bias_model = args.suppression_constant is not None or args.intervened_ffn_layers is not None
     wrapped_model, tok = initialize_wrapped_model_and_tokenizer(args.model_name, task_type, use_custom_bias_model)
-    wrapped_model = EncoderWrapper(AutoModelForMaskedLM.from_pretrained("../model_checkpoint_finetuner_BATCH_with_diff_lang/checkpoint-6000").to("cuda"),tok, task_type)
-    mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang)
+    mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang,tok)
 
     if args.intervened_ffn_layers is not None or args.suppression_constant is not None:
         mono_rank_preds, cs_rank_preds, gts = wrapped_model.inference_cloze_task_with_causal_intervention(mlama_instances, args.batch_size, args.probed_layers, args.beam_topk, args.ranking_topk, args.intervened_ffn_layers, args.suppression_constant)

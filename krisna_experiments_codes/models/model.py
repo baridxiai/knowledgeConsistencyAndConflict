@@ -1348,7 +1348,7 @@ class DecoderLensWrapper:
 
         new_prompts = []
         for prompt in prompts:
-            new_mask = "<extra_id_0>"
+            new_mask = "<extra_id_1>"
             new_prompt = prompt.replace('[Y]', new_mask)
             new_prompts.append(new_prompt)
         return new_prompts
@@ -1527,7 +1527,7 @@ class DecoderLensWrapper:
                     mono_start_subj_idx = mono_subj_spans[batch_idx][0] 
                     mono_end_subj_idx = mono_subj_spans[batch_idx][-1]
                     self._calculate_subj_obj_attention_per_instance(mono_tokens_attention, mono_attention_weights_per_layer, layer
-                                                                    , mono_start_obj_idx, mono_end_obj_idx, mono_start_subj_idx, mono_end_subj_idx)
+                                                                    , mono_obj_spans[batch_idx],mono_subj_spans[batch_idx])
                     
                     # calculate subject-object attention for codemixed input
                     cs_tokens_attention = cs_attention_spec_layer[batch_idx]
@@ -1535,9 +1535,7 @@ class DecoderLensWrapper:
                     cs_end_obj_idx = cs_obj_spans[batch_idx][-1]
                     cs_start_subj_idx = cs_subj_spans[batch_idx][0] 
                     cs_end_subj_idx = cs_subj_spans[batch_idx][-1]
-                    self._calculate_subj_obj_attention_per_instance(cs_tokens_attention, cs_attention_weights_per_layer, layer
-                                                                    , cs_start_obj_idx, cs_end_obj_idx, cs_start_subj_idx, cs_end_subj_idx)
-          
+                    self._calculate_subj_obj_attention_per_instance(cs_tokens_attention, cs_attention_weights_per_layer, layer, cs_obj_spans[batch_idx],cs_subj_spans[batch_idx]) 
         # accumulate all attentions for every layer
         for layer in selected_layers:
             for head_pos in mono_attention_weights_per_layer[layer].keys():

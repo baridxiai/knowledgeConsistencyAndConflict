@@ -1,11 +1,13 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 from argparse import ArgumentParser
 import pickle
 from utils import initialize_wrapped_model_and_tokenizer, load_mlama
 
 def main(args):
     task_type = 'cloze'
-    wrapped_model, _ = initialize_wrapped_model_and_tokenizer(args.model_name, task_type)
-    mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang)
+    wrapped_model, tok = initialize_wrapped_model_and_tokenizer(args.model_name, task_type)
+    mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang,tok)
 
     mono_attentions, cs_attentions = wrapped_model.extract_attention_scores_subj_obj(mlama_instances, args.batch_size, args.probed_layers)
 
