@@ -10,7 +10,7 @@ conda activate crosslingual-knowledge-consistency
 pip install -r requirements.txt
 ```
 
-2. Please copy all predictions and analyses assets from [here](https://mbzuaiac-my.sharepoint.com/:f:/g/personal/mahardika_ihsani_mbzuai_ac_ae/EjuuvXqeVBhEu5EeUqaZ1CcBjlAdXOLbPKSyj5WthVzmiA?e=mL1dlR). Then extract each compressed to file into one dedicated folder
+2. Please copy all predictions and analyses assets from **. Then extract each compressed to file into one dedicated folder
 
 ## How to reproduce the results
 1. To get the predictions on every encoder layer you can execute this following command (set the probed layers to just -1 if we just want to extract the results from the last layer of the encoder)

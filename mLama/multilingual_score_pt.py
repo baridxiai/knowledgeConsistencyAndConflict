@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-# code warrior: Barid
 import os
 
 # import tensorflow as tf

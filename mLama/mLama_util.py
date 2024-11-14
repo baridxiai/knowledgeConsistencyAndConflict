@@ -1,6 +1,3 @@
-# -*- coding: utf-8 -*-
-# code warrior: Barid
-
 import torch
 import numpy as np
 import datasets
