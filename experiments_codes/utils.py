@@ -1,8 +1,8 @@
 import re
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from datasets import load_dataset
 from tqdm import tqdm
-from models.model import initialize_model_and_tokenizer, DecoderLensWrapper, EncoderWrapper, initialize_encoder_model_and_tokenizer_per_task
+from models.model import initialize_model_and_tokenizer, DecoderLensWrapper, EncoderWrapper, initialize_encoder_model_and_tokenizer_per_task,DecoderWrapper
 from models.custom_mt0_bias import MT0ForConditionalGeneration
 from models.custom_bert_bias import BertForMaskedLM
 import random
@@ -17,6 +17,11 @@ def initialize_wrapped_model_and_tokenizer(model_name:str, task_type:str, use_cu
             _, tokenizer = initialize_model_and_tokenizer(model_name)
             model = MT0ForConditionalGeneration.from_pretrained(model_name).to('cuda')
         wrapped_model = DecoderLensWrapper(model, tokenizer)
+    if 'llama' in model_name or 'aya' in model_name: # encoder-decoder
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model.to('cuda')
+        wrapped_model = DecoderWrapper(model, tokenizer)
     else: # encoder
         if not use_custom_bias_model:
             model, tokenizer = initialize_encoder_model_and_tokenizer_per_task(model_name, task_type)
