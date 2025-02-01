@@ -2240,7 +2240,8 @@ class DecoderWrapper:
         all_obj_tokens = []
         obj_token_lengths = []
         for obj_label in obj_labels:
-            obj_tokens = self.tokenizer("assistant<|end_header_id|>\n\n"+obj_label)["input_ids"][4:]
+            # obj_tokens = self.tokenizer("assistant<|end_header_id|>\n\n"+obj_label)["input_ids"][4:]
+            obj_tokens = self.tokenizer("Answer: "+obj_label)["input_ids"][3:]
             obj_token_lengths.append(len(obj_tokens))
             all_obj_tokens.append(obj_tokens)
 
@@ -2265,11 +2266,11 @@ class DecoderWrapper:
         new_prompts = []
         for prompt, obj_token_length in zip(prompts, obj_token_lengths):
             new_prompt = prompt.replace('[Y]', '_')
-            chat = [{"role": "user", "content": "Finish the cloze question with words. Do not give additional comments."},
-                    {"role": "user", "content": new_prompt},
-                    ]
-            new_prompt = self.tokenizer.apply_chat_template(chat,add_generation_prompt=True, tokenize=False)
-            new_prompts.append(new_prompt)
+            # chat = [{"role": "user", "content": "Finish the cloze question with words. Do not give additional comments."},
+            #         {"role": "user", "content": new_prompt},
+            #         ]
+            chat = f"Finish the cloze question with words. Do not give additional comments. Question: {new_prompt}. Answer:"
+            new_prompts.append(chat)
         return new_prompts
 
 
@@ -2469,7 +2470,7 @@ class DecoderWrapper:
         @return masked_cols: position of first mask token [batch_size]
         """
 
-        masked_indices = torch.nonzero(inputs['input_ids'] == 128007, as_tuple=False)
+        masked_indices = torch.nonzero(inputs["inputs_ids"] != self.tokenizer.pad_token, as_tuple=False)
         masked_index = dict()
         masked_rows, masked_cols = [], []
         for pos in masked_indices:
@@ -3045,8 +3046,10 @@ class DecoderWrapper:
                 mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']) for instance in batch]
                 cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']) for instance in batch]
 
-                # Get tokenized object entities
-                _, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
+                # Get tokenized object entitis
+                # _, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
+                # Get the next token (only for decoder model)
+                obj_token_lengths, max_obj_token_len = 1
 
                 # Do n-gram masking
                 mono_prompts = self._mask_sentences(mono_prompts, obj_token_lengths)
@@ -3060,8 +3063,8 @@ class DecoderWrapper:
 
                 # Only getting the final output
                 if len(selected_layers) == 0 or -1 in selected_layers:
-                    mono_outputs = self.model.generate(**mono_inputs, output_hidden_states=True,max_new_tokens=10)
-                    cs_outputs = self.model.generate(**cs_inputs, output_hidden_states=True,max_new_tokens=10)
+                    mono_outputs = self.model(**mono_inputs, output_hidden_states=True)
+                    cs_outputs = self.model(**cs_inputs, output_hidden_states=True)
 
                     mono_log_probs = torch.log(mono_outputs['logits'].softmax(dim=-1)) # batch*seq_length*vocab
                     cs_log_probs = torch.log(cs_outputs['logits'].softmax(dim=-1)) # batch*seq_length*vocab
@@ -3070,8 +3073,8 @@ class DecoderWrapper:
 
 
                 else:
-                    mono_outputs = self.model.generate(**mono_inputs, output_hidden_states=True,max_new_tokens=10)
-                    cs_outputs = self.model.generate(**cs_inputs, output_hidden_states=True,max_new_tokens=10)
+                    mono_outputs = self.model(**mono_inputs,output_hidden_states=True)
+                    cs_outputs = self.model(**cs_inputs,output_hidden_states=True)
 
                     mono_hidden_states = mono_outputs.hidden_states[1:]
                     cs_hidden_states = cs_outputs.hidden_states[1:]
@@ -3302,7 +3305,7 @@ class DecoderWrapper:
         source_preds = []
         target_preds = []
         with torch.no_grad():
-            for batch in tqdm(dl):
+           for batch in tqdm(dl):
                 if self.task_type == 'qa':
                     query = [instance[0] for instance in batch]
                     same_lang_ctx = [instance[1][0] for instance in batch]

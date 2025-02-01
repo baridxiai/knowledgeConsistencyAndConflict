@@ -21,7 +21,7 @@ def initialize_wrapped_model_and_tokenizer(model_name:str, task_type:str, use_cu
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(model_name)
         model.to('cuda')
-        wrapped_model = DecoderWrapper(model, tokenizer)
+        wrapped_model = DecoderWrapper(model, tokenizer,task_type)
     else: # encoder
         if not use_custom_bias_model:
             model, tokenizer = initialize_encoder_model_and_tokenizer_per_task(model_name, task_type)
