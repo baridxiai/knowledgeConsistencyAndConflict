@@ -2269,7 +2269,8 @@ class DecoderWrapper:
             # chat = [{"role": "user", "content": "Finish the cloze question with words. Do not give additional comments."},
             #         {"role": "user", "content": new_prompt},
             #         ]
-            chat = f"Finish the cloze question with words. Do not give additional comments. Question: {new_prompt}. Answer:"
+
+            chat = f"Finish the cloze question with words. Do not give additional comments. \n Question: {new_prompt} \n Answer:"
             new_prompts.append(chat)
         return new_prompts
 
