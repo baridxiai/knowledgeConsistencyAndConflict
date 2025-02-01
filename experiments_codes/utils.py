@@ -89,13 +89,29 @@ def load_mlama(matrix_lang, target_lang,tokenizer):
                 m_lama_dict[m_lama_id] = dict()
             m_lama_dict[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(data['sub_label'])
             m_lama_dict[m_lama_id]['obj_label_cross_lang'] = add_punctuations_whitespace(data['obj_label'])
-        elif target_lang == "baseline":
+        elif target_lang == "baseline-encoder":
             if m_lama_id not in m_lama_dict:
                 m_lama_dict[m_lama_id] = dict()
             # random_uri = random.choice(list(set(sub_dict.keys())-set([data['sub_uri']])))
             sub_mask = tokenize_sub(data['sub_label'],tokenizer)
             #m_lama_dict[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace('<extra_id_0>')
             m_lama_dict[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(sub_mask)
+            m_lama_dict[m_lama_id]['obj_label_cross_lang'] = add_punctuations_whitespace(data['obj_label'])
+        elif target_lang == "baseline-encoder-decoder":
+            if m_lama_id not in m_lama_dict:
+                m_lama_dict[m_lama_id] = dict()
+            # random_uri = random.choice(list(set(sub_dict.keys())-set([data['sub_uri']])))
+            # sub_mask = tokenize_sub(data['sub_label'],tokenizer)
+            m_lama_dict[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace('<extra_id_0>')
+            # m_lama_dict[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(sub_mask)
+            m_lama_dict[m_lama_id]['obj_label_cross_lang'] = add_punctuations_whitespace(data['obj_label'])
+        elif target_lang == "baseline-decoder":
+            if m_lama_id not in m_lama_dict:
+                m_lama_dict[m_lama_id] = dict()
+            # random_uri = random.choice(list(set(sub_dict.keys())-set([data['sub_uri']])))
+            # sub_mask = tokenize_sub(data['sub_label'],tokenizer)
+            m_lama_dict[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace('_')
+            # m_lama_dict[m_lama_id]['subj_label_cross_lang'] = add_punctuations_whitespace(sub_mask)
             m_lama_dict[m_lama_id]['obj_label_cross_lang'] = add_punctuations_whitespace(data['obj_label'])
 
     mlama_instances = [instance for instance in m_lama_dict.values() if 'subj_label_cross_lang' in instance and 'subj_label_same_lang' in instance] # filter out any subject that doesn't have its parallel subject
