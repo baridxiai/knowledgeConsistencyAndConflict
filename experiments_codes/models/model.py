@@ -2470,7 +2470,7 @@ class DecoderWrapper:
         @return masked_cols: position of first mask token [batch_size]
         """
 
-        masked_indices = torch.nonzero(inputs["inputs_ids"] != self.tokenizer.pad_token, as_tuple=False)
+        masked_indices = torch.nonzero(inputs["input_ids"] != self.tokenizer.pad_token_id, as_tuple=False)
         masked_index = dict()
         masked_rows, masked_cols = [], []
         for pos in masked_indices:
@@ -3049,7 +3049,8 @@ class DecoderWrapper:
                 # Get tokenized object entitis
                 # _, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
                 # Get the next token (only for decoder model)
-                obj_token_lengths, max_obj_token_len = 1
+                obj_token_lengths =  [1 for _ in range(batch_size)]
+                max_obj_token_len = 1
 
                 # Do n-gram masking
                 mono_prompts = self._mask_sentences(mono_prompts, obj_token_lengths)
