@@ -2389,8 +2389,8 @@ class DecoderWrapper:
             cs_subj_labels = [instance['subj_label_cross_lang'].strip() for instance in batch]
 
             # create parallel code-switching statements
-            mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
-            cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+            mono_prompts = ["Answer:" + instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+            cs_prompts = ["Answer:" + instance['template'].replace('[X]', instance['subj_label_cross_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
 
 
             all_mono_subj_tokens, mono_subj_token_lengths, _ = self._tokenize_obj(mono_subj_labels)
