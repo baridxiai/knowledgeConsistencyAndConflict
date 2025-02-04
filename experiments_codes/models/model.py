@@ -1,6 +1,6 @@
 from tqdm import tqdm
 import torch
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering, AutoModelForMaskedLM, AutoModelForSequenceClassification, AutoModel
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering, AutoModelForMaskedLM, AutoModelForSequenceClassification, AutoModel, AutoModelForCausalLM
 from transformers.modeling_outputs import BaseModelOutput
 from tqdm.contrib import tzip
 import numpy as np
@@ -2389,8 +2389,8 @@ class DecoderWrapper:
             cs_subj_labels = [instance['subj_label_cross_lang'].strip() for instance in batch]
 
             # create parallel code-switching statements
-            mono_prompts = ["Answer:" + instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
-            cs_prompts = ["Answer:" + instance['template'].replace('[X]', instance['subj_label_cross_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+            mono_prompts = ["Answer: " + instance['template'].replace('[X]', instance['subj_label_same_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
+            cs_prompts = ["Answer: " + instance['template'].replace('[X]', instance['subj_label_cross_lang']).replace('[Y]', instance['obj_label']) for instance in batch]
 
 
             all_mono_subj_tokens, mono_subj_token_lengths, _ = self._tokenize_obj(mono_subj_labels)
@@ -3150,6 +3150,8 @@ class DecoderWrapper:
 
                 # Get tokenized object entities
                 all_obj_tokens, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
+                # obj_token_lengths = [1 for _ in range(batch)]
+                max_obj_token_len = 1
 
                 # Do n-gram masking
                 mono_prompts = self._mask_sentences(mono_prompts, obj_token_lengths)

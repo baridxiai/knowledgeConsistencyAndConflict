@@ -1,5 +1,8 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from typing import List, Dict
+import torch.nn.functional as F
+import numpy as np
 class AttnWrapper(torch.nn.Module):
     def __init__(self, attn):
         super().__init__()
@@ -49,11 +52,11 @@ class BlockOutputWrapper(torch.nn.Module):
             output[0][:, -1, :] += self.add_to_last_tensor
         if self.unembed_matrix is not None:
             self.block_output_unembedded = self.unembed_matrix(self.norm(output[0]))
-            attn_output = self.block.self_attn.activations
+            self.attn_output = self.block.self_attn.activations
             self.attn_mech_output_unembedded = self.unembed_matrix(self.norm(attn_output))
-            attn_output += args[0]
+            self.attn_output += args[0]
             self.intermediate_res_unembedded = self.unembed_matrix(self.norm(attn_output))
-            mlp_output = self.block.mlp(self.post_attention_layernorm(attn_output))
+            self.mlp_output = self.block.mlp(self.post_attention_layernorm(attn_output))
             self.mlp_output_unembedded = self.unembed_matrix(self.norm(mlp_output))
         return output
 
@@ -170,3 +173,44 @@ class LlamaHelper:
                 self.print_decoded_activations(layer.mlp_output_unembedded, 'MLP output')
             if print_block:
                 self.print_decoded_activations(layer.block_output_unembedded, 'Block output')
+    def scaled_input(emb: torch.Tensor, batch_size: int, num_batch: int = 1):
+        """"
+        Create a batch of activations delta
+
+        @param emb: activation tensor from the hidden states in FFN [1*intermediate_dim]
+        @param batch_size: how man instances within one batch of deltas
+        @param num_batch: total number of delta batches
+
+        @return res: batches of activation delta [num_of_points*intermediate_dim]
+        @return grad_step: batches of activation delta [1*intermediate_dim]
+        """
+        baseline = torch.zeros_like(emb) # 1*intermed_dim
+
+        num_points = batch_size * num_batch
+        grad_step = (emb - baseline) / num_points
+
+        res = torch.cat([torch.add(baseline, grad_step * i) for i in range(num_points)], dim=0) # batch
+        return res, grad_step.detach().cpu().numpy()
+    def ig2(self, input_ids, attention_mask=None
+                , tgt_layers: List[int]=None, integration_batch_size=20,integration_num_batch=1
+                , tgt_label=None):
+
+        # we only use one layer as of now for ig2 grad calculation
+
+        tgt_prob = self.get_logits(input_ids=input_ids)  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
+        for layer in tgt_layers:
+            ig2 = None
+            mlp_output = self.model.model.layers[layer].mlp_output[0,-1:,:]
+            scaled_weights, weights_step = self.scaled_input(mlp_output, integration_batch_size, integration_num_batch)  # (num_points, ffn_size), (ffn_size)
+            scaled_weights.requires_grad_(True)
+            total_grad = None
+            for batch_idx in range(integration_num_batch):
+                batch_weights = scaled_weights[batch_idx * integration_batch_size:(batch_idx + 1) * integration_batch_size]
+                all_batch_weights = {
+                    layer: batch_weights
+                }
+                grad = torch.autograd.grad(torch.unbind(tgt_prob[:, tgt_label]), all_batch_weights[tgt_layers[0]])
+                grad = grad.sum(axis=0)  # (ffn_size)
+                total_grad = grad if total_grad is None else np.add(total_grad, grad) # (ffn_size)
+            ig2 = total_grad*weights_step
+            return ig2[0].detach().cpu().numpy()

@@ -7,11 +7,13 @@ from tqdm import tqdm
 from datasets import load_dataset
 from tqdm import tqdm
 import pickle
-import re 
+import re
 from transformers import AutoTokenizer
 import numpy as np
 from models.custom_mt0_bias import MT0ForConditionalGeneration
 from models.custom_bert_bias import BertForMaskedLM
+from transformers import AutoModelForCausalLM
+from models.custom_llama import LlamaHelper
 from utils import load_mlama
 from typing import Union, List, Dict
 
@@ -31,12 +33,30 @@ def scaled_input(emb: torch.Tensor, batch_size: int, num_batch: int = 1) -> [tor
     baseline = torch.zeros_like(emb) # 1*intermed_dim
 
     num_points = batch_size * num_batch
-    grad_step = (emb - baseline) / num_points 
+    grad_step = (emb - baseline) / num_points
 
     res = torch.cat([torch.add(baseline, grad_step * i) for i in range(num_points)], dim=0) # batch
     return res, grad_step.detach().cpu().numpy()
 
+def decoder_sentences(prompts: List[str]) -> List[str]:
+    """
+    Replace single mask into tokenizer's n-gram masks
 
+    @param prompts: list of prompts/inputs]
+
+    @return new_prompts: list of edited prompts/inputs
+    """
+
+    new_prompts = []
+    for prompt in zip(prompts):
+        new_prompt = prompt.replace('[Y]', '_')
+        # chat = [{"role": "user", "content": "Finish the cloze question with words. Do not give additional comments."},
+        #         {"role": "user", "content": new_prompt},
+        #         ]
+
+        chat = f"Finish the cloze question with words. Do not give additional comments. \n Question: {new_prompt} \n Answer:"
+        new_prompts.append(chat)
+    return new_prompts
 def tokenize_obj(tokenizer: AutoTokenizer, obj_label: str, model_type: str):
     """
     Get the all necessary attributes with the tokenized object
@@ -53,19 +73,30 @@ def tokenize_obj(tokenizer: AutoTokenizer, obj_label: str, model_type: str):
     """
     if model_type == 'encoder-decoder':
         obj_tokens = tokenizer(f"<extra_id_0> {obj_label} <extra_id_1>")
-        obj_tokens_cuda = tokenizer(f"<extra_id_0> {obj_label} <extra_id_1>", return_tensors='pt').to('cuda') 
+        obj_tokens_cuda = tokenizer(f"<extra_id_0> {obj_label} <extra_id_1>", return_tensors='pt').to('cuda')
 
         obj_token_input_ids = obj_tokens['input_ids']
         start_pos = obj_token_input_ids.index(250099)
         end_pos = obj_token_input_ids.index(250098)
         obj_token_positions = [idx for idx in range(start_pos+1, end_pos)]
-        labels = [obj_token_input_ids[idx] for idx in obj_token_positions] 
-        
+        labels = [obj_token_input_ids[idx] for idx in obj_token_positions]
+
         return obj_tokens, obj_tokens_cuda, obj_token_positions, labels
-    
+    if model_type == 'decoder':
+        obj_tokens = tokenizer(f"{obj_label}")
+        obj_tokens_cuda = tokenizer(f"<extra_id_0> {obj_label} <extra_id_1>", return_tensors='pt').to('cuda')
+
+        obj_token_input_ids = obj_tokens['input_ids']
+        start_pos = obj_token_input_ids.index(250099)
+        end_pos = obj_token_input_ids.index(250098)
+        obj_token_positions = [idx for idx in range(start_pos+1, end_pos)]
+        labels = [obj_token_input_ids[idx] for idx in obj_token_positions]
+
+        return obj_tokens, obj_tokens_cuda, obj_token_positions, labels
+
     else:
         obj_tokens = tokenizer(obj_label)
-        obj_tokens_cuda = tokenizer(obj_label, return_tensors='pt').to('cuda') 
+        obj_tokens_cuda = tokenizer(obj_label, return_tensors='pt').to('cuda')
         obj_tokens_len = len(obj_tokens)
         return obj_tokens, obj_tokens_cuda, obj_tokens_len
 
@@ -74,6 +105,10 @@ def main(args):
     torch.cuda.empty_cache()
     if args.model_type == 'encoder-decoder':
         model = MT0ForConditionalGeneration.from_pretrained(args.model_name)
+    if args.model_type == 'decoder':
+        model = AutoModelForCausalLM.from_pretrained(args.model_name)
+        model.to('cuda')
+        model = LlamaHelper(model,tokenizer)
     else:
         model = BertForMaskedLM.from_pretrained(args.model_name)
     from accelerate import Accelerator
@@ -83,13 +118,13 @@ def main(args):
 
 #    model.to(device)
 
-    mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang)
+    mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang,tokenizer)
 
     extra_id_token = 250099
-    
+
     mono_ig2_avg_per_layer = dict()
     cs_ig2_avg_per_layer = dict()
-    
+
     divider = len(mlama_instances)
     model.eval()
 
@@ -132,7 +167,7 @@ def main(args):
                     mono_ig2_avg_per_layer[key] = ig2_mono.squeeze(0)
                 else:
                     mono_ig2_avg_per_layer[key] = np.add(mono_ig2_avg_per_layer[key] , ig2_mono.squeeze(0))
-            
+
             # codemixed ig2
             _, cs_ffn_states_per_layer, _ = model(**tokenized_instance_cs_template, labels=obj_tokens_cuda['input_ids'], tgt_layers=args.probed_layers, encoder_tgt_pos = [extra_token_position_cs], decoder_tgt_positions = [obj_token_positions], tgt_labels=labels)
             for key, ffn_states in cs_ffn_states_per_layer.items():
@@ -153,8 +188,51 @@ def main(args):
                     cs_ig2_avg_per_layer[key] = ig2_cs.squeeze(0)
                 else:
                     cs_ig2_avg_per_layer[key] = np.add(cs_ig2_avg_per_layer[key] , ig2_cs.squeeze(0))
-        
-        # encoder
+
+        # decoder
+        if args.model_type == 'decoder':
+            labels  = tokenizer("Answer: " + instance['obj_label'])[3:4]
+
+            # replace the object
+            obj_tokens_input_ids = obj_tokens_cuda['input_ids'] # for replacement
+            instance_template = instance['template'].replace('[Y]', "_")
+
+            instance_mono_template = instance_template.replace('[X]', instance['subj_label_same_lang'])
+            instance_cs_template = instance_template.replace('[X]', instance['subj_label_cross_lang'])
+            instance_mono_template = decoder_sentences(instance_mono_template)
+            instance_cs_template = decoder_sentences(instance_cs_template)
+            tokenized_instance_mono_template = tokenizer(instance_mono_template, return_tensors='pt', padding=False).to('cuda')
+            tokenized_instance_cs_template = tokenizer(instance_cs_template, return_tensors='pt', padding=False).to('cuda')
+
+            ig2_mono = model.ig2(input_ids=tokenized_instance_mono_template['input_ids'], tgt_layers=args.probed_layers, tgt_label=labels)
+            if layer not in mono_ig2_avg_per_layer:
+                mono_ig2_avg_per_layer[layer] = ig2_mono.squeeze(0)
+            else:
+                mono_ig2_avg_per_layer[layer] = np.add(mono_ig2_avg_per_layer[layer] , ig2_mono.squeeze(0))
+            # cs ig2
+            cs_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in tokenized_instance_cs_template.items()}
+            ig2_cs = None
+            for curr_mask_pos in range(start_tgt_pos_cs, start_tgt_pos_cs+obj_tokens_len):
+                ffn_states, _, _ = model(**cs_inputs_copy, tgt_layers=[layer], tgt_pos = [curr_mask_pos])
+                scaled_weights, weights_step = scaled_input(ffn_states[layer], args.integration_batch_size, args.integration_num_batch)  # (num_points, ffn_size), (ffn_size)
+                scaled_weights.requires_grad_(True)
+                total_grad = None
+                for batch_idx in range(args.integration_num_batch):
+                    batch_weights = scaled_weights[batch_idx * args.integration_batch_size:(batch_idx + 1) * args.integration_batch_size]
+                    all_batch_weights = {
+                        layer: batch_weights
+                    }
+                    _, grad = model(**cs_inputs_copy, tgt_layers=[layer], tgt_pos = [curr_mask_pos], all_tmp_scores=all_batch_weights, tgt_label=obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_cs], calculate_grad=True)  # (batch, n_vocab), (batch, ffn_size)
+                    grad = grad.sum(axis=0)  # (ffn_size)
+                    total_grad = grad if total_grad is None else np.add(total_grad, grad) # (ffn_size)
+                cs_inputs_copy['input_ids'][0][curr_mask_pos] = obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_cs]
+                total_grad = total_grad*weights_step
+                ig2_cs = total_grad if ig2_cs is None else np.add(ig2_cs, total_grad)
+            ig2_cs = np.divide(ig2_cs, obj_tokens_len)
+            if layer not in cs_ig2_avg_per_layer:
+                cs_ig2_avg_per_layer[layer] = ig2_cs.squeeze(0)
+            else:
+                cs_ig2_avg_per_layer[layer] = np.add(cs_ig2_avg_per_layer[layer] , ig2_cs.squeeze(0))
         else:
             _, obj_tokens_cuda, obj_tokens_len  = tokenize_obj(tokenizer, instance['obj_label'], args.model_type)
 
@@ -171,7 +249,7 @@ def main(args):
             start_tgt_pos_mono = tokenized_instance_mono_template['input_ids'][0].tolist().index(tokenizer.mask_token_id)
             start_tgt_pos_cs = tokenized_instance_cs_template['input_ids'][0].tolist().index(tokenizer.mask_token_id)
 
-            
+
             for layer in args.probed_layers:
                 # monolingual ig2
                 mono_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in tokenized_instance_mono_template.items()}
@@ -197,7 +275,7 @@ def main(args):
                     mono_ig2_avg_per_layer[layer] = ig2_mono.squeeze(0)
                 else:
                     mono_ig2_avg_per_layer[layer] = np.add(mono_ig2_avg_per_layer[layer] , ig2_mono.squeeze(0))
-                
+
                 # cs ig2
                 cs_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in tokenized_instance_cs_template.items()}
                 ig2_cs = None
@@ -224,9 +302,9 @@ def main(args):
                     cs_ig2_avg_per_layer[layer] = np.add(cs_ig2_avg_per_layer[layer] , ig2_cs.squeeze(0))
 
     for layer in args.probed_layers:
-        mono_ig2_avg_per_layer[layer] = np.divide(mono_ig2_avg_per_layer[layer], divider)           
-        cs_ig2_avg_per_layer[layer] = np.divide(cs_ig2_avg_per_layer[layer], divider)  
-    
+        mono_ig2_avg_per_layer[layer] = np.divide(mono_ig2_avg_per_layer[layer], divider)
+        cs_ig2_avg_per_layer[layer] = np.divide(cs_ig2_avg_per_layer[layer], divider)
+
     mono_output_filepath = f"{args.output_prefix}-{args.matrix_lang}-{args.embedded_lang}-mono-ig2.pkl"
     cs_output_filepath = f"{args.output_prefix}-{args.matrix_lang}-{args.embedded_lang}-cm-ig2.pkl"
 
@@ -237,7 +315,7 @@ def main(args):
     with open(cs_output_filepath, 'wb') as f:
         pickle.dump(cs_ig2_avg_per_layer, f)
 
-    
+
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--integration_num_batch', type=int, default=1)
