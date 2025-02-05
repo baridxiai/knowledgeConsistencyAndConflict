@@ -38,7 +38,7 @@ def scaled_input(emb: torch.Tensor, batch_size: int, num_batch: int = 1) -> [tor
     res = torch.cat([torch.add(baseline, grad_step * i) for i in range(num_points)], dim=0) # batch
     return res, grad_step.detach().cpu().numpy()
 
-def decoder_sentences(prompts: List[str]) -> List[str]:
+def decoder_sentences(prompt):
     """
     Replace single mask into tokenizer's n-gram masks
 
@@ -48,14 +48,13 @@ def decoder_sentences(prompts: List[str]) -> List[str]:
     """
 
     new_prompts = []
-    for prompt in zip(prompts):
-        new_prompt = prompt.replace('[Y]', '_')
-        # chat = [{"role": "user", "content": "Finish the cloze question with words. Do not give additional comments."},
-        #         {"role": "user", "content": new_prompt},
-        #         ]
+    new_prompt = prompt.replace('[Y]', '_')
+    # chat = [{"role": "user", "content": "Finish the cloze question with words. Do not give additional comments."},
+    #         {"role": "user", "content": new_prompt},
+    #         ]
 
-        chat = f"Finish the cloze question with words. Do not give additional comments. \n Question: {new_prompt} \n Answer:"
-        new_prompts.append(chat)
+    chat = f"Finish the cloze question with words. Do not give additional comments. \n Question: {new_prompt} \n Answer:"
+    new_prompts.append(chat)
     return new_prompts
 def tokenize_obj(tokenizer: AutoTokenizer, obj_label: str, model_type: str):
     """
@@ -105,16 +104,16 @@ def main(args):
     torch.cuda.empty_cache()
     if args.model_type == 'encoder-decoder':
         model = MT0ForConditionalGeneration.from_pretrained(args.model_name)
+        model.eval()
     if args.model_type == 'decoder':
         model = AutoModelForCausalLM.from_pretrained(args.model_name)
         model.to('cuda')
         model = LlamaHelper(model,tokenizer)
+        model.model.eval()
     else:
         model = BertForMaskedLM.from_pretrained(args.model_name)
+        model.eval()
     from accelerate import Accelerator
-    accelerator = Accelerator()
-    device = accelerator.device
-    model= accelerator.prepare(model)
 
 #    model.to(device)
 
@@ -126,7 +125,6 @@ def main(args):
     cs_ig2_avg_per_layer = dict()
 
     divider = len(mlama_instances)
-    model.eval()
 
     for instance in tqdm(mlama_instances):
         if args.model_type == 'encoder-decoder':
@@ -194,11 +192,11 @@ def main(args):
             labels  = tokenizer("Answer: " + instance['obj_label'])[3:4]
 
             # replace the object
-            obj_tokens_input_ids = obj_tokens_cuda['input_ids'] # for replacement
-            instance_template = instance['template'].replace('[Y]', "_")
+            # obj_tokens_input_ids = obj_tokens_cuda['input_ids'] # for replacement
+            # instance_template = instance['template'].replace('[Y]', "_")
 
-            instance_mono_template = instance_template.replace('[X]', instance['subj_label_same_lang'])
-            instance_cs_template = instance_template.replace('[X]', instance['subj_label_cross_lang'])
+            instance_mono_template = instance['template'].replace('[X]', instance['subj_label_same_lang'])
+            instance_cs_template = instance['template'].replace('[X]', instance['subj_label_cross_lang'])
             instance_mono_template = decoder_sentences(instance_mono_template)
             instance_cs_template = decoder_sentences(instance_cs_template)
             tokenized_instance_mono_template = tokenizer(instance_mono_template, return_tensors='pt', padding=False).to('cuda')
@@ -325,7 +323,7 @@ if __name__ == '__main__':
     parser.add_argument('--matrix_lang', type=str)
     parser.add_argument('--embedded_lang', type=str)
     parser.add_argument('--output_prefix', type=str, required=False)
-    parser.add_argument('--model_type', type=str, choices=['encoder-decoder', 'encoder'])
+    parser.add_argument('--model_type', type=str, choices=['encoder-decoder', 'encoder','decoder'])
 
     args = parser.parse_args()
 

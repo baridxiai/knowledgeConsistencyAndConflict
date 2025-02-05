@@ -53,11 +53,11 @@ class BlockOutputWrapper(torch.nn.Module):
         if self.unembed_matrix is not None:
             self.block_output_unembedded = self.unembed_matrix(self.norm(output[0]))
             self.attn_output = self.block.self_attn.activations
-            self.attn_mech_output_unembedded = self.unembed_matrix(self.norm(attn_output))
+            self.attn_mech_output_unembedded = self.unembed_matrix(self.norm(self.attn_output))
             self.attn_output += args[0]
-            self.intermediate_res_unembedded = self.unembed_matrix(self.norm(attn_output))
-            self.mlp_output = self.block.mlp(self.post_attention_layernorm(attn_output))
-            self.mlp_output_unembedded = self.unembed_matrix(self.norm(mlp_output))
+            self.intermediate_res_unembedded = self.unembed_matrix(self.norm(self.attn_output))
+            self.mlp_output = self.block.mlp(self.post_attention_layernorm(self.attn_output))
+            self.mlp_output_unembedded = self.unembed_matrix(self.norm(self.mlp_output))
         return output
 
     def block_add_to_last_tensor(self, tensor):
@@ -115,11 +115,14 @@ class LlamaHelper:
         print(logits.shape)
         return torch.distributions.categorical.Categorical(logits=logits).sample().item()
 
-    def get_logits(self, prompt):
+    def get_logits(self, prompt, grad=False):
         # inputs = self.tokenizer(prompt, return_tensors="pt")
-        with torch.no_grad():
-          logits = self.model(**prompt).logits
-          return logits
+        if grad:
+            logits = self.model(input_ids=prompt).logits
+        else:
+            with torch.no_grad():
+                logits = self.model(input_ids=prompt).logits
+        return logits
 
     def set_add_attn_output(self, layer, add_output):
         self.model.model.layers[layer].attn_add_tensor(add_output)
@@ -173,7 +176,7 @@ class LlamaHelper:
                 self.print_decoded_activations(layer.mlp_output_unembedded, 'MLP output')
             if print_block:
                 self.print_decoded_activations(layer.block_output_unembedded, 'Block output')
-    def scaled_input(emb: torch.Tensor, batch_size: int, num_batch: int = 1):
+    def scaled_input(self,emb: torch.Tensor, batch_size: int, num_batch: int = 1):
         """"
         Create a batch of activations delta
 
@@ -197,7 +200,7 @@ class LlamaHelper:
 
         # we only use one layer as of now for ig2 grad calculation
 
-        tgt_prob = self.get_logits(input_ids=input_ids)  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
+        tgt_prob = self.get_logits(input_ids, grad=True)  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
         for layer in tgt_layers:
             ig2 = None
             mlp_output = self.model.model.layers[layer].mlp_output[0,-1:,:]
@@ -209,7 +212,8 @@ class LlamaHelper:
                 all_batch_weights = {
                     layer: batch_weights
                 }
-                grad = torch.autograd.grad(torch.unbind(tgt_prob[:, tgt_label]), all_batch_weights[tgt_layers[0]])
+                grad = torch.autograd.grad(torch.unbind(tgt_prob[:,-1, tgt_label]), all_batch_weights[layer],allow_unused=True)
+                grad = grad[0].detach().cpu().numpy()
                 grad = grad.sum(axis=0)  # (ffn_size)
                 total_grad = grad if total_grad is None else np.add(total_grad, grad) # (ffn_size)
             ig2 = total_grad*weights_step

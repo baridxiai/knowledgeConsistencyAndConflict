@@ -1,4 +1,4 @@
-# Taken from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/custom_bert_bias.py with several adjustments 
+# Taken from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/custom_bert_bias.py with several adjustments
 
 import copy
 import json
@@ -354,14 +354,14 @@ class PreTrainedBertModel(nn.Module):
         def load_state_dict_hf(model_name):
             weights_filepath = cached_file(model_name, WEIGHTS_NAME, _raise_exceptions_for_missing_entries=False)
             return weights_filepath
-        
+
 
         config_file = load_config_hf(pretrained_model_name)
         config = BertConfig.from_json_file(config_file)
         logger.info("Model config {}".format(config))
         # Instantiate model.
         model = cls(config, *inputs, **kwargs)
-        
+
         if state_dict is None:
             pretrained_state_dict = load_state_dict_hf(pretrained_model_name)
             state_dict = torch.load(pretrained_state_dict)
@@ -452,7 +452,7 @@ class BertForMaskedLM(PreTrainedBertModel):
                 , all_tmp_scores: Dict[int, torch.Tensor] = None
                 , suppression_constant: float = None, subject_tokens_positions: List[List[int]] = None
                 , tgt_label=None, calculate_grad=False):
-        
+
         # we only use one layer as of now for ig2 grad calculation
         if calculate_grad and len(tgt_layers)!=1:
             raise ValueError("we only support IG2 gradient for one layer as of now")
@@ -472,20 +472,20 @@ class BertForMaskedLM(PreTrainedBertModel):
         last_hidden, all_ffn_weights, hidden_states = self.bert(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids
                                                                 , tgt_pos=tgt_pos, tgt_layers=tgt_layers, all_tmp_scores=all_tmp_scores, suppression_constant=suppression_constant
                                                                 , subject_tokens_positions=subject_tokens_positions)  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
-    
+
         batch_positions = [[batch_idx] for batch_idx in range(len(last_hidden))]
         tgt_positions = [[tgt_pos[batch_idx]] for batch_idx in range(len(last_hidden))]
-        
+
         for layer_idx in all_ffn_weights.keys():
             batch_positions = [[batch_idx] for batch_idx in range(len(all_ffn_weights[layer_idx]))]
             tgt_positions = [[tgt_pos[batch_idx]] for batch_idx in range(len(all_ffn_weights[layer_idx]))]
             all_ffn_weights[layer_idx] = all_ffn_weights[layer_idx][batch_positions, tgt_positions, :].squeeze(1)  # (batch, ffn_size)
-        
+
         last_hidden = last_hidden[batch_positions, tgt_positions, :].squeeze(1)  # (batch, hidden_size)
         tgt_logits = self.cls(last_hidden)  # (batch, n_vocab)
-        
+
         tgt_prob = F.softmax(tgt_logits, dim=1)  # (batch, n_vocab)
-        
+
         if not calculate_grad or all_tmp_scores is None:
             # return ffn_weights at a layer and the final layer logits at the [MASK] position and also hidden layer
             return all_ffn_weights, tgt_logits, hidden_states
