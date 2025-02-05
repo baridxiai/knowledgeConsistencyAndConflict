@@ -112,9 +112,9 @@ def main(args):
         model.model.eval()
     else:
         model = BertForMaskedLM.from_pretrained(args.model_name)
+        model.to("cuda")
         model.eval()
 
-    model.to("cuda")
 
     mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang,tokenizer)
 
