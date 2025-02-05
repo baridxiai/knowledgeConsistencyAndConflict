@@ -189,7 +189,7 @@ def main(args):
 
         # decoder
         if args.model_type == 'decoder':
-            labels  = tokenizer("Answer: " + instance['obj_label'])[3:4]
+            labels  = tokenizer("Answer: " + instance['obj_label'])["input_ids"][3:4]
 
             # replace the object
             # obj_tokens_input_ids = obj_tokens_cuda['input_ids'] # for replacement
