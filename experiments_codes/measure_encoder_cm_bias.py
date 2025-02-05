@@ -113,9 +113,8 @@ def main(args):
     else:
         model = BertForMaskedLM.from_pretrained(args.model_name)
         model.eval()
-    from accelerate import Accelerator
 
-#    model.to(device)
+    model.to("cuda")
 
     mlama_instances = load_mlama(args.matrix_lang, args.embedded_lang,tokenizer)
 

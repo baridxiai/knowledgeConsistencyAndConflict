@@ -201,6 +201,7 @@ class LlamaHelper:
         # we only use one layer as of now for ig2 grad calculation
 
         tgt_prob = self.get_logits(input_ids, grad=True)  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
+        tgt_prob = tgt_prob[:,-1,:].squeeze(1)
         for layer in tgt_layers:
             ig2 = None
             mlp_output = self.model.model.layers[layer].mlp_output[0,-1:,:]
@@ -212,7 +213,10 @@ class LlamaHelper:
                 all_batch_weights = {
                     layer: batch_weights
                 }
-                grad = torch.autograd.grad(torch.unbind(tgt_prob[:,-1, tgt_label]), all_batch_weights[layer],allow_unused=True)
+                tmp_score = all_batch_weights[layer]
+                batch_size = tmp_score.shape[0]
+                tgt_prob = tgt_prob.repeat(batch_size, 1)
+                grad = torch.autograd.grad(torch.unbind(tgt_prob[:,tgt_label]), all_batch_weights[layer],allow_unused=True)
                 grad = grad[0].detach().cpu().numpy()
                 grad = grad.sum(axis=0)  # (ffn_size)
                 total_grad = grad if total_grad is None else np.add(total_grad, grad) # (ffn_size)
