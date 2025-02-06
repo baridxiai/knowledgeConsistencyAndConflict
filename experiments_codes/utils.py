@@ -17,7 +17,8 @@ def initialize_wrapped_model_and_tokenizer(model_name:str, task_type:str, use_cu
             _, tokenizer = initialize_model_and_tokenizer(model_name)
             model = MT0ForConditionalGeneration.from_pretrained(model_name).to('cuda')
         wrapped_model = DecoderLensWrapper(model, tokenizer)
-    if 'llama' in model_name or 'aya' in model_name: # encoder-decoder
+        return wrapped_model, tokenizer
+    elif 'llama' in model_name or 'aya' in model_name: # encoder-decoder
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(model_name)
         model.to('cuda')
@@ -66,7 +67,7 @@ def load_mlama(matrix_lang, target_lang,tokenizer):
     @param matrix_lang: matrix language
     @param embedded_lang: embeded language
     """
-    m_lama = load_dataset("m_lama")["test"].shuffle(seed=42)
+    m_lama = load_dataset("cis-lmu/m_lama")["test"].shuffle(seed=42)
     m_lama_dict = dict()
     # if target_lang == "baseline":
     #     sub_dict = dict()
