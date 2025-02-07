@@ -67,7 +67,7 @@ def load_mlama(matrix_lang, target_lang,tokenizer):
     @param matrix_lang: matrix language
     @param embedded_lang: embeded language
     """
-    m_lama = load_dataset("cis-lmu/m_lama")["test"].shuffle(seed=42)
+    m_lama = load_dataset("cis-lmu/m_lama", trust_remote_code=True)["test"].shuffle(seed=42)
     m_lama_dict = dict()
     # if target_lang == "baseline":
     #     sub_dict = dict()

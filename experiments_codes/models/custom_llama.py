@@ -38,14 +38,30 @@ class BlockOutputWrapper(torch.nn.Module):
         self.block.self_attn = AttnWrapper(self.block.self_attn)
         self.post_attention_layernorm = self.block.post_attention_layernorm
 
-        self.attn_mech_output_unembedded = self.unembed_matrix
-        self.intermediate_res_unembedded = self.unembed_matrix
-        self.mlp_output_unembedded = self.unembed_matrix
-        self.block_output_unembedded = self.unembed_matrix
-        self.add_to_last_tensor = self.unembed_matrix
-        self.output = self.unembed_matrix
-    def forward(self,  *args, **kwargs):
-        output = self.block(*args, **kwargs)
+        self.attn_mech_output_unembedded = None
+        self.intermediate_res_unembedded = None
+        self.mlp_output_unembedded = None
+        self.block_output_unembedded = None
+        self.add_to_last_tensor = None
+        self.output = None
+    def forward(self, hidden_states, *args, **kwargs):
+        residual = hidden_states
+
+        hidden_states = self.block.input_layernorm(hidden_states,*args, **kwargs)
+
+        # Self Attention
+        self.attn_hidden_states, self.self_attn_weights = self.block.self_attn(
+*args, **kwargs
+        )
+        hidden_states = residual + self.attn_hidden_states
+
+        # Fully Connected
+        residual = hidden_states
+        hidden_states = self.block.post_attention_layernorm(hidden_states)
+        self.ffn_states = self.block.mlp.act_fn(self.block.mlp.gate_proj(hidden_states)) * self.block.mlp.up_proj(hidden_states)
+        hidden_states = self.block.mlp.down_proj(self.ffn_states)
+        hidden_states = residual + hidden_states
+        output = (hidden_states,)
         self.output = output[0]
         if self.add_to_last_tensor is not None:
             print('performing intervention: add_to_last_tensor')
