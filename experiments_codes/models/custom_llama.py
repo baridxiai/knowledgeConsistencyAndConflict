@@ -220,7 +220,7 @@ class LlamaHelper:
         tgt_prob = tgt_prob[:,-1,:].squeeze(1)
         for layer in tgt_layers:
             ig2 = None
-            mlp_output = self.model.model.layers[layer].mlp_output[0,-1:,:]
+            mlp_output = self.model.model.layers[layer].ffn_states[0,-1:,:]
             scaled_weights, weights_step = self.scaled_input(mlp_output, integration_batch_size, integration_num_batch)  # (num_points, ffn_size), (ffn_size)
             scaled_weights.requires_grad_(True)
             total_grad = None
