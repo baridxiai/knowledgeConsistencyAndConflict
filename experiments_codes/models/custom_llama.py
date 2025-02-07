@@ -38,12 +38,12 @@ class BlockOutputWrapper(torch.nn.Module):
         self.block.self_attn = AttnWrapper(self.block.self_attn)
         self.post_attention_layernorm = self.block.post_attention_layernorm
 
-        self.attn_mech_output_unembedded = None
-        self.intermediate_res_unembedded = None
-        self.mlp_output_unembedded = None
-        self.block_output_unembedded = None
-        self.add_to_last_tensor = None
-        self.output = None
+        self.attn_mech_output_unembedded = self.unembed_matrix
+        self.intermediate_res_unembedded = self.unembed_matrix
+        self.mlp_output_unembedded = self.unembed_matrix
+        self.block_output_unembedded = self.unembed_matrix
+        self.add_to_last_tensor = self.unembed_matrix
+        self.output = self.unembed_matrix
     def forward(self,  *args, **kwargs):
         output = self.block(*args, **kwargs)
         self.output = output[0]
@@ -193,7 +193,7 @@ class LlamaHelper:
         grad_step = (emb - baseline) / num_points
 
         res = torch.cat([torch.add(baseline, grad_step * i) for i in range(num_points)], dim=0) # batch
-        return res, grad_step.detach().cpu().numpy()
+        return res, grad_step
     def ig2(self, input_ids, attention_mask=None
                 , tgt_layers: List[int]=None, integration_batch_size=20,integration_num_batch=1
                 , tgt_label=None):
