@@ -112,17 +112,18 @@ class BlockOutputWrapper(torch.nn.Module):
         hidden_states = self.block.input_layernorm(hidden_states)
 
         # Self Attention
-        if self.act_as_identity:
-            kwargs["attention_mask"] += kwargs["attention_mask"][
-                0, 0, 0, 1
-            ] * torch.tril(
-                torch.ones(
-                    kwargs["attention_mask"].shape,
-                    dtype=kwargs["attention_mask"].dtype,
-                    device=kwargs["attention_mask"].device,
-                ),
-                diagonal=-1,
-            )
+        if "act_as_identity" in kwargs:
+            if kwargs["act_as_identity"] is not None:
+                kwargs["attention_mask"] += kwargs["attention_mask"][
+                    0, 0, 0, 1
+                ] * torch.tril(
+                    torch.ones(
+                        kwargs["attention_mask"].shape,
+                        dtype=kwargs["attention_mask"].dtype,
+                        device=kwargs["attention_mask"].device,
+                    ),
+                    diagonal=-1,
+                )
         self.attn_hidden_states, self.self_attn_weights, present_key_value  = self.block.self_attn(hidden_states,*args, **kwargs)
         hidden_states = residual + self.attn_hidden_states
         if "attention_intervention" in kwargs:
@@ -231,13 +232,13 @@ class LlamaHelper:
         return (
             torch.distributions.categorical.Categorical(logits=logits).sample().item()
         )
-    def logits_fn(self,input_ids, attention_mask, ig2=None, tgt_layers=[]):
+    def logits_fn(self,input_ids, attention_mask=None, ig2=None, tgt_layers=[]):
         hidden_states = self.model.model.embed_tokens(input_ids)
         for i, layer in enumerate(self.model.model.layers):
             if layer in tgt_layers:
-                hidden_states = self.model.model.layers[i](input_ids,attention_mask,ig2=ig2)
+                hidden_states = self.model.model.layers[i](hidden_states,attention_mask=attention_mask,ig2=ig2)
             else:
-                hidden_states = self.model.model.layers[i](input_ids,attention_mask)
+                hidden_states = self.model.model.layers[i](hidden_states,attention_mask=attention_mask)
         hidden_states = self.model.model.norm(hidden_states)
         logits = self.model.model.lm_head(hidden_states)
         return logits
