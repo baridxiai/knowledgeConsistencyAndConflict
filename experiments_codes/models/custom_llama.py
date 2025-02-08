@@ -232,14 +232,14 @@ class LlamaHelper:
             torch.distributions.categorical.Categorical(logits=logits).sample().item()
         )
     def logits_fn(self,input_ids, attention_mask, ig2=None, tgt_layers=[]):
-        hidden_states = self.model.embed_tokens(input_ids)
+        hidden_states = self.model.model.embed_tokens(input_ids)
         for i, layer in enumerate(self.model.model.layers):
             if layer in tgt_layers:
                 hidden_states = self.model.model.layers[i](input_ids,attention_mask,ig2=ig2)
             else:
                 hidden_states = self.model.model.layers[i](input_ids,attention_mask)
-        hidden_states = self.model.norm(hidden_states)
-        logits = self.model.lm_head(hidden_states)
+        hidden_states = self.model.model.norm(hidden_states)
+        logits = self.model.model.lm_head(hidden_states)
         return logits
     def get_logits(self, input_ids, attention_mask, ig2=None, tgt_layers=[], grad=False):
         # inputs = self.tokenizer(prompt, return_tensors="pt")
