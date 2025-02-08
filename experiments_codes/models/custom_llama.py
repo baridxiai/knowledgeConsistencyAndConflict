@@ -234,11 +234,15 @@ class LlamaHelper:
         )
     def logits_fn(self,input_ids, attention_mask=None, ig2=None, tgt_layers=[]):
         hidden_states = self.model.model.embed_tokens(input_ids)
+        cache_position = torch.arange(
+                0, 0 + hidden_states.shape[1], device=hidden_states.device
+            )
+        position_ids = cache_position.unsqueeze(0)
         for i, layer in enumerate(self.model.model.layers):
             if layer in tgt_layers:
-                hidden_states = self.model.model.layers[i](hidden_states,attention_mask=attention_mask,ig2=ig2)
+                hidden_states = self.model.model.layers[i](hidden_states,attention_mask=attention_mask,ig2=ig2,position_ids=position_ids)
             else:
-                hidden_states = self.model.model.layers[i](hidden_states,attention_mask=attention_mask)
+                hidden_states = self.model.model.layers[i](hidden_states,attention_mask=attention_mask,position_ids=position_ids)
         hidden_states = self.model.model.norm(hidden_states)
         logits = self.model.model.lm_head(hidden_states)
         return logits
