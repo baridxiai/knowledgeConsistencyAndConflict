@@ -151,17 +151,17 @@ class BlockOutputWrapper(torch.nn.Module):
             if kwargs["output_intervention"]:
                 print("performing intervention: add_to_last_tensor")
                 hidden_states[:, -1, :] += self.add_to_last_tensor
-        output = (hidden_states,)
         self.output = hidden_states
-        if kwargs["output_attentions"]:
-            output += (self.self_attn_weights,)
-        if kwargs["use_cache"]:
-            output += (present_key_value,)
+        output = hidden_states
+        # if kwargs["output_attentions"]:
+        #     output += (self.self_attn_weights,)
+        # if kwargs["use_cache"]:
+        #     output += (present_key_value,)
         if self.unembed_matrix is not None:
             self.attn_states_unembedded = self.unembed_matrix(
                 self.norm(self.attn_output)
             )
-            self.ffn_states_unembedded = self.unembed_matrix(self.norm(self.ffn_states))
+            # self.ffn_states_unembedded = self.unembed_matrix(self.norm(self.ffn_states))
             self.output_unembedded = self.unembed_matrix(self.norm(self.output))
         return output
 
@@ -395,7 +395,10 @@ class LlamaHelper:
                 ]
                 batch_size = batch_weights.shape[0]
                 batch_input_ids = input_ids.repeat(batch_size, 1)
-                batch_attention_mask = attention_mask.repeat(batch_size, 1)
+                if attention_mask is not None:
+                    batch_attention_mask = attention_mask.repeat(batch_size, 1)
+                else:
+                    batch_attention_mask = attention_mask
                 tgt_prob = self.get_logits(
             batch_input_ids,batch_attention_mask, ig2=batch_weights,tgt_layers=tgt_layers, grad=True
         )
