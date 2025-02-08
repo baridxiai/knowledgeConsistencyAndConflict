@@ -147,9 +147,10 @@ class BlockOutputWrapper(torch.nn.Module):
                 self.ffn_states += kwargs["ffn_intervention"]
         hidden_states = self.block.mlp.down_proj(self.ffn_states)
         hidden_states = residual + hidden_states
-        if kwargs["output_intervention"]:
-            print("performing intervention: add_to_last_tensor")
-            hidden_states[:, -1, :] += self.add_to_last_tensor
+        if "output_intervention" in kwargs:
+            if kwargs["output_intervention"]:
+                print("performing intervention: add_to_last_tensor")
+                hidden_states[:, -1, :] += self.add_to_last_tensor
         output = (hidden_states,)
         self.output = hidden_states
         if kwargs["output_attentions"]:
