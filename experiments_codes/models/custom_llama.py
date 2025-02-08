@@ -159,7 +159,7 @@ class BlockOutputWrapper(torch.nn.Module):
         #     output += (present_key_value,)
         if self.unembed_matrix is not None:
             self.attn_states_unembedded = self.unembed_matrix(
-                self.norm(self.attn_output)
+                self.norm(self.attn_states)
             )
             # self.ffn_states_unembedded = self.unembed_matrix(self.norm(self.ffn_states))
             self.output_unembedded = self.unembed_matrix(self.norm(self.output))

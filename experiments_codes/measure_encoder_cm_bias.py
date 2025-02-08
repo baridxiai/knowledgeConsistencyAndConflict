@@ -201,31 +201,14 @@ def main(args):
             tokenized_instance_mono_template = tokenizer(instance_mono_template, return_tensors='pt', padding=False).to('cuda')
             tokenized_instance_cs_template = tokenizer(instance_cs_template, return_tensors='pt', padding=False).to('cuda')
 
-            ig2_mono = model.ig2(input_ids=tokenized_instance_mono_template['input_ids'],attention_mask=tokenized_instance_mono_template['attention_mask'],tgt_layers=args.probed_layers, tgt_label=labels)
+            ig2_mono = model.ig2(input_ids=tokenized_instance_mono_template['input_ids'],attention_mask=None,tgt_layers=args.probed_layers, tgt_label=labels)
             if layer not in mono_ig2_avg_per_layer:
                 mono_ig2_avg_per_layer[layer] = ig2_mono.squeeze(0)
             else:
                 mono_ig2_avg_per_layer[layer] = np.add(mono_ig2_avg_per_layer[layer] , ig2_mono.squeeze(0))
             # cs ig2
-            cs_inputs_copy = {key: tensor.clone().to(torch.device('cuda')) for key, tensor in tokenized_instance_cs_template.items()}
-            ig2_cs = None
-            for curr_mask_pos in range(start_tgt_pos_cs, start_tgt_pos_cs+obj_tokens_len):
-                ffn_states, _, _ = model(**cs_inputs_copy, tgt_layers=[layer], tgt_pos = [curr_mask_pos])
-                scaled_weights, weights_step = scaled_input(ffn_states[layer], args.integration_batch_size, args.integration_num_batch)  # (num_points, ffn_size), (ffn_size)
-                scaled_weights.requires_grad_(True)
-                total_grad = None
-                for batch_idx in range(args.integration_num_batch):
-                    batch_weights = scaled_weights[batch_idx * args.integration_batch_size:(batch_idx + 1) * args.integration_batch_size]
-                    all_batch_weights = {
-                        layer: batch_weights
-                    }
-                    _, grad = model(**cs_inputs_copy, tgt_layers=[layer], tgt_pos = [curr_mask_pos], all_tmp_scores=all_batch_weights, tgt_label=obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_cs], calculate_grad=True)  # (batch, n_vocab), (batch, ffn_size)
-                    grad = grad.sum(axis=0)  # (ffn_size)
-                    total_grad = grad if total_grad is None else np.add(total_grad, grad) # (ffn_size)
-                cs_inputs_copy['input_ids'][0][curr_mask_pos] = obj_tokens_input_ids[0][curr_mask_pos-start_tgt_pos_cs]
-                total_grad = total_grad*weights_step
-                ig2_cs = total_grad if ig2_cs is None else np.add(ig2_cs, total_grad)
-            ig2_cs = np.divide(ig2_cs, obj_tokens_len)
+            ig2_cs = model.ig2(input_ids=tokenized_instance_cs_template['input_ids'],attention_mask=None,tgt_layers=args.probed_layers, tgt_label=labels)
+
             if layer not in cs_ig2_avg_per_layer:
                 cs_ig2_avg_per_layer[layer] = ig2_cs.squeeze(0)
             else:
