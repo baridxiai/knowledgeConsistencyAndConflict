@@ -203,16 +203,16 @@ def main(args):
             for layer in args.probed_layers:
                 ig2_mono = model.ig2(input_ids=tokenized_instance_mono_template['input_ids'],attention_mask=None,tgt_layers=[layer], tgt_label=labels)
                 if layer not in mono_ig2_avg_per_layer:
-                    mono_ig2_avg_per_layer[layer] = ig2_mono.squeeze(0)
+                    mono_ig2_avg_per_layer[layer] = ig2_mono
                 else:
-                    mono_ig2_avg_per_layer[layer] = np.add(mono_ig2_avg_per_layer[layer] , ig2_mono.squeeze(0))
+                    mono_ig2_avg_per_layer[layer] = np.add(mono_ig2_avg_per_layer[layer] , ig2_mono)
                 # cs ig2
                 ig2_cs = model.ig2(input_ids=tokenized_instance_cs_template['input_ids'],attention_mask=None,tgt_layers=[layer], tgt_label=labels)
 
                 if layer not in cs_ig2_avg_per_layer:
-                    cs_ig2_avg_per_layer[layer] = ig2_cs.squeeze(0)
+                    cs_ig2_avg_per_layer[layer] = ig2_cs
                 else:
-                    cs_ig2_avg_per_layer[layer] = np.add(cs_ig2_avg_per_layer[layer] , ig2_cs.squeeze(0))
+                    cs_ig2_avg_per_layer[layer] = np.add(cs_ig2_avg_per_layer[layer] , ig2_cs)
         else:
             _, obj_tokens_cuda, obj_tokens_len  = tokenize_obj(tokenizer, instance['obj_label'], args.model_type)
 
