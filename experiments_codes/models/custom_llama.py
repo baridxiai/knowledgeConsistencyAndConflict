@@ -142,6 +142,7 @@ class BlockOutputWrapper(torch.nn.Module):
                 tmp_score = kwargs["ig2"]
                 batch_positions = [[batch_idx] for batch_idx in range(len(tmp_score))]
                 self.ffn_states[batch_positions, -1, :] = tmp_score.unsqueeze(1)
+                print("performing ig2")
         if "ffn_intervention" in kwargs:
             if kwargs["ffn_intervention"] is not None:
                 self.ffn_states += kwargs["ffn_intervention"]
@@ -240,20 +241,20 @@ class LlamaHelper:
             )
         position_ids = cache_position.unsqueeze(0)
         for i, layer in enumerate(self.model.model.layers):
-            if layer in tgt_layers:
+            if i in tgt_layers:
                 hidden_states = self.model.model.layers[i](hidden_states,attention_mask=attention_mask,ig2=ig2,position_ids=position_ids)
             else:
                 hidden_states = self.model.model.layers[i](hidden_states,attention_mask=attention_mask,position_ids=position_ids)
         hidden_states = self.model.model.norm(hidden_states)
-        logits = self.model.model.lm_head(hidden_states)
+        logits = self.model.lm_head(hidden_states)
         return logits
     def get_logits(self, input_ids, attention_mask, ig2=None, tgt_layers=[], grad=False):
         # inputs = self.tokenizer(prompt, return_tensors="pt")
         if grad:
-            logits = self.logits_fn(input_ids, attention_mask, ig2=None, tgt_layers=[])
+            logits = self.logits_fn(input_ids, attention_mask, ig2=ig2, tgt_layers=tgt_layers)
         else:
             with torch.no_grad():
-                logits = self.logits_fn(input_ids, attention_mask, ig2=None, tgt_layers=[])
+                logits = self.logits_fn(input_ids, attention_mask, ig2=ig2, tgt_layers=tgt_layers)
         return logits
 
     def set_add_attn_output(self, layer, add_output):
@@ -401,7 +402,7 @@ class LlamaHelper:
                     batch_attention_mask = attention_mask
                 tgt_prob = self.get_logits(
             batch_input_ids,batch_attention_mask, ig2=batch_weights,tgt_layers=tgt_layers, grad=True
-        )
+            )[:,-1,:].squeeze(1)
                 grad = torch.autograd.grad(
                     torch.unbind(tgt_prob[:, tgt_label]),
                     batch_weights,
