@@ -142,7 +142,6 @@ class BlockOutputWrapper(torch.nn.Module):
                 tmp_score = kwargs["ig2"]
                 batch_positions = [[batch_idx] for batch_idx in range(len(tmp_score))]
                 self.ffn_states[batch_positions, -1, :] = tmp_score.unsqueeze(1)
-                print("performing ig2")
         if "ffn_intervention" in kwargs:
             if kwargs["ffn_intervention"] is not None:
                 self.ffn_states += kwargs["ffn_intervention"]
@@ -407,7 +406,7 @@ class LlamaHelper:
                     torch.unbind(tgt_prob[:, tgt_label]),
                     batch_weights,
                 )
-                grad = grad[0].detach().cpu().numpy()
+                grad = grad[0]
                 grad = grad.sum(axis=0)  # (ffn_size)
                 total_grad = (
                     grad if total_grad is None else np.add(total_grad, grad)
