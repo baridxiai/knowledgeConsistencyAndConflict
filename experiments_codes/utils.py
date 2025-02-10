@@ -6,6 +6,7 @@ from models.model import initialize_model_and_tokenizer, DecoderLensWrapper, Enc
 from models.custom_mt0_bias import MT0ForConditionalGeneration
 from models.custom_bert_bias import BertForMaskedLM
 import random
+import torch
 
 def initialize_wrapped_model_and_tokenizer(model_name:str, task_type:str, use_custom_bias_model: bool = False) -> [object, AutoTokenizer]:
     #initialize based on task
@@ -20,8 +21,9 @@ def initialize_wrapped_model_and_tokenizer(model_name:str, task_type:str, use_cu
         return wrapped_model, tokenizer
     elif 'llama' in model_name or 'aya' in model_name: # encoder-decoder
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(model_name)
-        model.to('cuda')
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, # force fp16 mode
+            # attn_implementation="flash_attention_2",
+            device_map="auto")
         wrapped_model = DecoderWrapper(model, tokenizer,task_type)
     else: # encoder
         if not use_custom_bias_model:
