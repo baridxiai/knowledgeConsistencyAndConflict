@@ -161,7 +161,6 @@ class BlockOutputWrapper(torch.nn.Module):
         self.ffn_states_unembedded = None
         self.output_unembedded = None
         self.output = None
-        self.block.self_attn = AttentionWrapper(self.block.self_attn)
 
     def forward(self, hidden_states, *args, **kwargs):
         residual = hidden_states
