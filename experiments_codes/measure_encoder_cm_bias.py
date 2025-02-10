@@ -1,10 +1,9 @@
 # Adapted implementation from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/1_analyze_mlm_bias.py\
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "3,2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "3,2"
 from argparse import ArgumentParser
 import torch
 from tqdm import tqdm
-from datasets import load_dataset
 from tqdm import tqdm
 import pickle
 import re
@@ -201,13 +200,13 @@ def main(args):
             tokenized_instance_mono_template = tokenizer(instance_mono_template, return_tensors='pt', padding=False).to('cuda')
             tokenized_instance_cs_template = tokenizer(instance_cs_template, return_tensors='pt', padding=False).to('cuda')
             for layer in args.probed_layers:
-                ig2_mono = model.ig2(input_ids=tokenized_instance_mono_template['input_ids'],attention_mask=None,tgt_layers=[layer], tgt_label=labels)
+                ig2_mono = model.ig2(input_ids=tokenized_instance_mono_template['input_ids'],attention_mask=None,tgt_layer=[layer], tgt_label=labels)
                 if layer not in mono_ig2_avg_per_layer:
                     mono_ig2_avg_per_layer[layer] = ig2_mono
                 else:
                     mono_ig2_avg_per_layer[layer] = np.add(mono_ig2_avg_per_layer[layer] , ig2_mono)
                 # cs ig2
-                ig2_cs = model.ig2(input_ids=tokenized_instance_cs_template['input_ids'],attention_mask=None,tgt_layers=[layer], tgt_label=labels)
+                ig2_cs = model.ig2(input_ids=tokenized_instance_cs_template['input_ids'],attention_mask=None,tgt_layer=[layer], tgt_label=labels)
 
                 if layer not in cs_ig2_avg_per_layer:
                     cs_ig2_avg_per_layer[layer] = ig2_cs
