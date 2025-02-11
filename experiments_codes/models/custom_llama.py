@@ -489,9 +489,6 @@ class LlamaHelper:
     ):
 
         # we only use one layer as of now for ig2 grad calculation
-        import pdb
-
-        pdb.set_trace()
         tgt_prob = self.get_logits(
             input_ids, attention_mask, grad=True
         )  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
@@ -499,7 +496,10 @@ class LlamaHelper:
         ig2 = None
         mlp_output = self.model.model.layers[tgt_layer].ffn_states[0, -1:, :]
         left_mlp_output = self.model.model.layers[tgt_layer].ffn_states[0, :-1, :]
-        before_tgt = self.model.model.layers[tgt_layer - 1].output
+        if tgt_layer >0:
+            before_tgt = self.model.model.layers[tgt_layer - 1].output
+        else:
+            before_tgt = None
         scaled_weights, weights_step = self.scaled_input(
             mlp_output, integration_batch_size, integration_num_batch
         )  # (num_points, ffn_size), (ffn_size)
