@@ -297,23 +297,17 @@ class LlamaHelper:
             torch.distributions.categorical.Categorical(logits=logits).sample().item()
         )
 
-    def logits_fn(self, input_ids, attention_mask=None, ig2=None, tgt_layers=[]):
-        hidden_states = self.model.model.embed_tokens(input_ids)
+    def logits_fn(self, input_ids, attention_mask=None,tgt_layer=-1, intervention=None):
+        if tgt_layer == -1:
+            hidden_states = self.model.model.embed_tokens(input_ids)
+        else:
+            hidden_states = intervention
         cache_position = torch.arange(
             0, 0 + hidden_states.shape[1], device=hidden_states.device
         )
         position_ids = cache_position.unsqueeze(0)
-        for i, layer in enumerate(self.model.model.layers):
-            if i in tgt_layers:
-                hidden_states = self.model.model.layers[i](
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    ig2=ig2,
-                    position_ids=position_ids,
-                )
-            else:
-                hidden_states = self.model.model.layers[i](
-                    hidden_states,
+        for i in range(tgt_layer+1,len(self.model.model.layers)):
+                hidden_states = self.model.model.layers[i]( hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                 )
@@ -322,18 +316,18 @@ class LlamaHelper:
         return logits
 
     def get_logits(
-        self, input_ids, attention_mask, ig2=None, tgt_layers=[], grad=False
+        self, input_ids, attention_mask, tgt_layer = -1, intervention=None, grad=False
     ):
         # inputs = self.tokenizer(prompt, return_tensors="pt")
         if grad:
             logits = self.logits_fn(
-                input_ids, attention_mask, ig2=ig2, tgt_layers=tgt_layers
+                input_ids, attention_mask, tgt_layer, intervention
             )
         else:
             with torch.no_grad():
                 logits = self.logits_fn(
-                    input_ids, attention_mask, ig2=ig2, tgt_layers=tgt_layers
-                )
+                    input_ids, attention_mask,tgt_layer, intervention
+            )
         return logits
 
     def set_add_attn_output(self, layer, add_output):
@@ -454,13 +448,14 @@ class LlamaHelper:
     ):
 
         # we only use one layer as of now for ig2 grad calculation
-
+        import pdb;pdb.set_trace()
         tgt_prob = self.get_logits(
             input_ids, attention_mask, grad=True
         )  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
         tgt_prob = tgt_prob[:, -1, :].squeeze(1)
         ig2 = None
         mlp_output = self.model.model.layers[tgt_layer].ffn_states[0, -1:, :]
+        left_mlp_output = self.model.model.layers[tgt_layer].ffn_states[0, :-1, :]
         scaled_weights, weights_step = self.scaled_input(
             mlp_output, integration_batch_size, integration_num_batch
         )  # (num_points, ffn_size), (ffn_size)
@@ -474,15 +469,17 @@ class LlamaHelper:
             ]
             batch_size = batch_weights.shape[0]
             batch_input_ids = input_ids.repeat(batch_size, 1)
+            batch_left_mlp_output = left_mlp_output.repeat(batch_size, 1,1)
+            ig2 = torch.cat([batch_left_mlp_output, scaled_weights],1)
             if attention_mask is not None:
-                batch_attention_mask = attention_mask.repeat(batch_size, 1)
+                batch_attention_mask = attention_mask.repeat(batch_size, 1,1)
             else:
                 batch_attention_mask = attention_mask
             tgt_prob = self.get_logits(
                 batch_input_ids,
                 batch_attention_mask,
-                ig2=batch_weights,
-                tgt_layers=[tgt_layer],
+                ig2=ig2,
+                tgt_layers=tgt_layer,
                 grad=True,
             )[:, -1, :].squeeze(1)
             grad = torch.autograd.grad(
