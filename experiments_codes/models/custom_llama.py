@@ -518,7 +518,7 @@ class LlamaHelper:
             batch_input_ids,
             batch_attention_mask,
             ffn_intervention=ig2,
-            tgt_layers=tgt_layer,
+            tgt_layer=tgt_layer,
             tgt_initialization=before_tgt,
             intervention_mode="==",
             grad=True,
