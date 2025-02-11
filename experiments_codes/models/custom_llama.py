@@ -206,6 +206,11 @@ class BlockOutputWrapper(torch.nn.Module):
                     ) * self.block.mlp.up_proj(self.attn_states)
                     if kwargs["intervention_mode"] == "+":
                         self.ffn_states += kwargs["ffn_intervention"]
+            else:
+                self.ffn_states = self.block.mlp.act_fn(
+                    self.block.mlp.gate_proj(self.attn_states)
+                ) * self.block.mlp.up_proj(self.attn_states)
+
         else:
             self.ffn_states = self.block.mlp.act_fn(
                 self.block.mlp.gate_proj(self.attn_states)
@@ -345,7 +350,6 @@ class LlamaHelper:
         grad=False,
     ):
         # inputs = self.tokenizer(prompt, return_tensors="pt")
-        import pdb;pdb.set_trace()
         if grad:
             logits = self.logits_fn(
                 input_ids,
