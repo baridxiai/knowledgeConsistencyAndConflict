@@ -345,12 +345,13 @@ class LlamaHelper:
         grad=False,
     ):
         # inputs = self.tokenizer(prompt, return_tensors="pt")
+        import pdb;pdb.set_trace()
         if grad:
             logits = self.logits_fn(
                 input_ids,
                 attention_mask,
                 tgt_layer,
-                ffn_intervention,
+                ffn_intervention=ffn_intervention,
                 tgt_initialization=tgt_initialization,
                 intervention_mode=intervention_mode,
             )
@@ -360,7 +361,7 @@ class LlamaHelper:
                     input_ids,
                     attention_mask,
                     tgt_layer,
-                    ffn_intervention,
+                    ffn_intervention=ffn_intervention,
                     tgt_initialization=tgt_initialization,
                     intervention_mode=intervention_mode,
                 )
