@@ -505,36 +505,32 @@ class LlamaHelper:
         )  # (num_points, ffn_size), (ffn_size)
         scaled_weights.requires_grad_(True)
         total_grad = None
-        for batch_idx in range(integration_num_batch):
-            batch_weights = scaled_weights[
-                batch_idx : batch_idx
-                + 1 * integration_batch_size : (batch_idx + 1) * integration_batch_size
-            ]
-            batch_size = batch_weights.shape[0]
-            batch_input_ids = input_ids.repeat(batch_size, 1)
-            batch_left_mlp_output = left_mlp_output.repeat(batch_size, 1, 1)
-            ig2 = torch.cat([batch_left_mlp_output, batch_weights], 1)
-            if attention_mask is not None:
-                batch_attention_mask = attention_mask.repeat(batch_size, 1, 1)
-            else:
-                batch_attention_mask = attention_mask
-            tgt_prob = self.get_logits(
-                batch_input_ids,
-                batch_attention_mask,
-                ffn_intervention=ig2,
-                tgt_layers=tgt_layer,
-                tgt_initialization=before_tgt,
-                intervention_mode="==",
-                grad=True,
-            )[:, -1, :].squeeze(1)
-            grad = torch.autograd.grad(
-                torch.unbind(tgt_prob[:, tgt_label]),
-                batch_weights,
-            )
-            grad = grad[0]
-            grad = grad.sum(axis=0)  # (ffn_size)
-            total_grad = (
-                grad if total_grad is None else np.add(total_grad, grad)
-            )  # (ffn_size)
+        batch_weights = scaled_weights.unsqueeze(1)
+        batch_size = batch_weights.shape[0]
+        batch_input_ids = input_ids.repeat(batch_size, 1)
+        batch_left_mlp_output = left_mlp_output.repeat(batch_size, 1, 1)
+        ig2 = torch.cat([batch_left_mlp_output, batch_weights], 1)
+        if attention_mask is not None:
+            batch_attention_mask = attention_mask.repeat(batch_size, 1, 1)
+        else:
+            batch_attention_mask = attention_mask
+        tgt_prob = self.get_logits(
+            batch_input_ids,
+            batch_attention_mask,
+            ffn_intervention=ig2,
+            tgt_layers=tgt_layer,
+            tgt_initialization=before_tgt,
+            intervention_mode="==",
+            grad=True,
+        )[:, -1, :].squeeze(1)
+        grad = torch.autograd.grad(
+            torch.unbind(tgt_prob[:, tgt_label]),
+            batch_weights,
+        )
+        grad = grad[0]
+        grad = grad.sum(axis=0)  # (ffn_size)
+        total_grad = (
+            grad if total_grad is None else np.add(total_grad, grad)
+        )  # (ffn_size)
         ig2 = total_grad * weights_step
         return ig2[0].detach().cpu().numpy()
