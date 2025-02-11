@@ -327,7 +327,7 @@ class LlamaHelper:
             0, 0 + hidden_states.shape[1], device=hidden_states.device
         )
         position_ids = cache_position.unsqueeze(0)
-        for i in range(tgt_layer + 1, len(self.model.model.layers)):
+        for i in range(tgt_layer, len(self.model.model.layers)):
             hidden_states = self.model.model.layers[i](
                 hidden_states,
                 attention_mask=attention_mask,
