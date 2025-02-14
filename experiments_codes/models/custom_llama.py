@@ -202,7 +202,7 @@ class LlamaHelper:
         batch_size = batch_weights.shape[0]
         batch_input_ids = input_ids.repeat(batch_size, 1)
         ig2 = [None for _ in range(len(self.model.model.layers))]
-        ig2[tgt_layer] = mlp_output
+        ig2[tgt_layer] = batch_weights
         if attention_mask is not None:
             batch_attention_mask = attention_mask.repeat(batch_size, 1, 1)
         else:
