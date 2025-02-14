@@ -161,7 +161,7 @@ class LlamaHelper:
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    ffn_intervention=ffn_intervention,
+                    ffn_intervention=ffn_intervention[i],
                     intervention_mode=intervention_mode,
                     ffn_intervention_position=ffn_intervention_position,
                     past_key_values=past_key_values,
@@ -206,7 +206,8 @@ class LlamaHelper:
         batch_weights = scaled_weights.unsqueeze(1)
         batch_size = batch_weights.shape[0]
         batch_input_ids = input_ids.repeat(batch_size, 1)
-        ig2 = mlp_output
+        ig2 = [None for _ in range(len(self.model.model.layers))]
+        ig2[tgt_layer] = mlp_output
         if attention_mask is not None:
             batch_attention_mask = attention_mask.repeat(batch_size, 1, 1)
         else:
@@ -214,7 +215,7 @@ class LlamaHelper:
         tgt_prob = self.forward(
             batch_input_ids,
             batch_attention_mask,
-            ffn_intervention=[ig2],
+            ffn_intervention=ig2,
             tgt_layer=[tgt_layer],
             intervention_mode="==",
             ffn_intervention_position=-1,
