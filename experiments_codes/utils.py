@@ -5,6 +5,7 @@ from tqdm import tqdm
 from models.model import initialize_model_and_tokenizer, DecoderLensWrapper, EncoderWrapper, initialize_encoder_model_and_tokenizer_per_task,DecoderWrapper
 from models.custom_mt0_bias import MT0ForConditionalGeneration
 from models.custom_bert_bias import BertForMaskedLM
+from models.custom_llama import LlamaHelper
 import random
 import torch
 
@@ -20,9 +21,14 @@ def initialize_wrapped_model_and_tokenizer(model_name:str, task_type:str, use_cu
         wrapped_model = DecoderLensWrapper(model, tokenizer)
         return wrapped_model, tokenizer
     elif 'llama' in model_name or 'aya' in model_name: # encoder-decoder
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, # force fp16 mode
+        if not use_custom_bias_model:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, # force fp16 mode
             # attn_implementation="flash_attention_2",
+            device_map="auto")
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=torch.bfloat16, # force fp16 mode
             device_map="auto")
         wrapped_model = DecoderWrapper(model, tokenizer,task_type)
     else: # encoder

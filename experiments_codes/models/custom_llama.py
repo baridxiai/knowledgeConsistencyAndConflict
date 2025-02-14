@@ -197,9 +197,9 @@ class BlockOutputWrapper(torch.nn.Module):
         # Fully Connected
 
         if "ffn_intervention" in kwargs:
-            if kwargs["ffn_intervention"] is not None:
+            if kwargs["ffn_intervention"] is not None and kwargs["ffn_intervention_position"] is not None:
                 if kwargs["intervention_mode"] == "==":
-                    self.ffn_states = kwargs["ffn_intervention"]
+                    self.ffn_states[:, kwargs["ffn_intervention_position"],:] = kwargs["ffn_intervention"]
                 else:
                     self.ffn_states = self.block.mlp.act_fn(
                         self.block.mlp.gate_proj(self.attn_states)
@@ -311,30 +311,43 @@ class LlamaHelper:
         self,
         input_ids,
         attention_mask=None,
-        tgt_layer=-1,
+        tgt_layer=[],
         tgt_initialization=None,
-        ffn_intervention=None,
+        ffn_intervention=[],
         intervention_mode="==",
+        ffn_intervention_position = -1,
     ):
-        if tgt_layer == -1:
+        if len(tgt_layer) == 0:
             hidden_states = self.model.model.embed_tokens(input_ids)
         else:
-            if tgt_initialization is not None:
-                hidden_states = tgt_initialization
-            else:
+            if tgt_layer[0] == -1:
                 hidden_states = self.model.model.embed_tokens(input_ids)
+            else:
+                if tgt_initialization is not None:
+                    hidden_states = tgt_initialization
+                else:
+                    hidden_states = self.model.model.embed_tokens(input_ids)
         cache_position = torch.arange(
             0, 0 + hidden_states.shape[1], device=hidden_states.device
         )
         position_ids = cache_position.unsqueeze(0)
-        for i in range(tgt_layer, len(self.model.model.layers)):
-            hidden_states = self.model.model.layers[i](
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                ffn_intervention=ffn_intervention,
-                intervention_mode=intervention_mode,
-            )
+        for i in range(tgt_layer[0], len(self.model.model.layers)):
+            if i in tgt_layer:
+                hidden_states = self.model.model.layers[i](
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    ffn_intervention=ffn_intervention,
+                    intervention_mode=intervention_mode,
+                    ffn_intervention_position = ffn_intervention_position
+                )
+            else:
+                hidden_states = self.model.model.layers[i](
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                )
+
         hidden_states = self.model.model.norm(hidden_states)
         logits = self.model.lm_head(hidden_states)
         return logits
@@ -343,9 +356,10 @@ class LlamaHelper:
         self,
         input_ids,
         attention_mask,
-        tgt_layer=-1,
+        tgt_layer=[-1],
         ffn_intervention=None,
         tgt_initialization=None,
+        ffn_intervention_position = -1,
         intervention_mode="==",
         grad=False,
     ):
@@ -358,6 +372,7 @@ class LlamaHelper:
                 ffn_intervention=ffn_intervention,
                 tgt_initialization=tgt_initialization,
                 intervention_mode=intervention_mode,
+                ffn_intervention_position = ffn_intervention_position
             )
         else:
             with torch.no_grad():
@@ -368,6 +383,7 @@ class LlamaHelper:
                     ffn_intervention=ffn_intervention,
                     tgt_initialization=tgt_initialization,
                     intervention_mode=intervention_mode,
+                    ffn_intervention_position = ffn_intervention_position
                 )
         return logits
 
@@ -487,15 +503,13 @@ class LlamaHelper:
         integration_num_batch=1,
         tgt_label=None,
     ):
-
         # we only use one layer as of now for ig2 grad calculation
         tgt_prob = self.get_logits(
             input_ids, attention_mask, grad=True
         )  # (batch, max_len, hidden_size), (batch, max_len, ffn_size)
         tgt_prob = tgt_prob[:, -1, :].squeeze(1)
         ig2 = None
-        mlp_output = self.model.model.layers[tgt_layer].ffn_states[0, -1:, :]
-        left_mlp_output = self.model.model.layers[tgt_layer].ffn_states[0, :-1, :]
+        mlp_output = self.model.model.layers[tgt_layer].ffn_states[0, -1, :]
         if tgt_layer >0:
             before_tgt = self.model.model.layers[tgt_layer - 1].output
         else:
@@ -508,8 +522,7 @@ class LlamaHelper:
         batch_weights = scaled_weights.unsqueeze(1)
         batch_size = batch_weights.shape[0]
         batch_input_ids = input_ids.repeat(batch_size, 1)
-        batch_left_mlp_output = left_mlp_output.repeat(batch_size, 1, 1)
-        ig2 = torch.cat([batch_left_mlp_output, batch_weights], 1)
+        ig2 = mlp_output
         if attention_mask is not None:
             batch_attention_mask = attention_mask.repeat(batch_size, 1, 1)
         else:
@@ -517,12 +530,12 @@ class LlamaHelper:
         tgt_prob = self.get_logits(
             batch_input_ids,
             batch_attention_mask,
-            ffn_intervention=ig2,
-            tgt_layer=tgt_layer,
+            ffn_intervention=[ig2],
+            tgt_layer=[tgt_layer],
             tgt_initialization=before_tgt,
             intervention_mode="==",
-            grad=True,
-        )[:, -1, :].squeeze(1)
+            ffn_intervention_position = -1,
+            grad=True)[:, -1, :].squeeze(1)
         grad = torch.autograd.grad(
             torch.unbind(tgt_prob[:, tgt_label]),
             batch_weights,
