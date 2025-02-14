@@ -123,7 +123,7 @@ class LlamaHelper:
         grad_step = (emb - baseline) / num_points
 
         res = torch.cat([torch.add(baseline, grad_step * i) for i in range(num_points)], dim=0) # batch
-        return res, grad_step.detach().cpu().numpy()
+        return res, grad_step
     def forward(
         self,
         input_ids,
