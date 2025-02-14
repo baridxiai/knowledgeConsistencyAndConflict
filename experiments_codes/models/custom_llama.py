@@ -112,6 +112,24 @@ class LlamaHelper:
         for i, layer in enumerate(self.model.model.layers):
             self.model.model.layers[i] = BlockOutputWrapper(layer, idx=i)
 
+    def scaled_input(self,emb: torch.Tensor, batch_size: int, num_batch: int = 1):
+        """"
+        Create a batch of activations delta
+
+        @param emb: activation tensor from the hidden states in FFN [1*intermediate_dim]
+        @param batch_size: how man instances within one batch of deltas
+        @param num_batch: total number of delta batches
+
+        @return res: batches of activation delta [num_of_points*intermediate_dim]
+        @return grad_step: batches of activation delta [1*intermediate_dim]
+        """
+        baseline = torch.zeros_like(emb) # 1*intermed_dim
+
+        num_points = batch_size * num_batch
+        grad_step = (emb - baseline) / num_points
+
+        res = torch.cat([torch.add(baseline, grad_step * i) for i in range(num_points)], dim=0) # batch
+        return res, grad_step.detach().cpu().numpy()
     def forward(
         self,
         input_ids,
@@ -137,7 +155,7 @@ class LlamaHelper:
             past_seen_tokens + hidden_states.shape[1],
             device=hidden_states.device,
         )
-        for i in range(tgt_layer[0], len(self.model.model.layers)):
+        for i in range(len(self.model.model.layers)):
             if i in tgt_layer:
                 hidden_states, _, past_key_values = self.model.model.layers[i](
                     hidden_states,
@@ -200,7 +218,6 @@ class LlamaHelper:
             tgt_layer=[tgt_layer],
             intervention_mode="==",
             ffn_intervention_position=-1,
-            grad=True,
         )[:, -1, :].squeeze(1)
         grad = torch.autograd.grad(
             torch.unbind(tgt_prob[:, tgt_label]),
