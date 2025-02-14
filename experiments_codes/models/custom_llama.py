@@ -51,13 +51,16 @@ class BlockOutputWrapper(torch.nn.Module):
 
         # Fully Connected
 
+        self.ffn_states = self.block.mlp.act_fn(
+            self.block.mlp.gate_proj(self.attn_states)
+        ) * self.block.mlp.up_proj(self.attn_states)
         if "ffn_intervention" in kwargs:
             if (
                 kwargs["ffn_intervention"] is not None
                 and kwargs["ffn_intervention_position"] is not None
             ):
                 if kwargs["intervention_mode"] == "==":
-                    self.ffn_states[:, kwargs["ffn_intervention_position"], :] = kwargs[
+                    self.ffn_states[:, kwargs["ffn_intervention_position"]:, :] = kwargs[
                         "ffn_intervention"
                     ]
                 else:
@@ -66,15 +69,6 @@ class BlockOutputWrapper(torch.nn.Module):
                     ) * self.block.mlp.up_proj(self.attn_states)
                     if kwargs["intervention_mode"] == "+":
                         self.ffn_states += kwargs["ffn_intervention"]
-            else:
-                self.ffn_states = self.block.mlp.act_fn(
-                    self.block.mlp.gate_proj(self.attn_states)
-                ) * self.block.mlp.up_proj(self.attn_states)
-
-        else:
-            self.ffn_states = self.block.mlp.act_fn(
-                self.block.mlp.gate_proj(self.attn_states)
-            ) * self.block.mlp.up_proj(self.attn_states)
 
         hidden_states = self.block.mlp.down_proj(self.ffn_states)
         hidden_states = residual + hidden_states
@@ -167,6 +161,7 @@ class LlamaHelper:
                     past_key_values=past_key_values,
                     position_embeddings=position_embeddings,
                     cache_position=cache_position,
+                    **kwargs
                 )
             else:
                 hidden_states, _, past_key_values = self.model.model.layers[i](
