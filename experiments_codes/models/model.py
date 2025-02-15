@@ -3174,13 +3174,13 @@ class DecoderWrapper:
 
 
                 else:
-                    mono_outputs = self.model(**mono_inputs)
+                    mono_outputs = self.model.forward(**mono_inputs)
 
 
                     ffn_intervention = [ self.model.model.layers[i].output[:,-1:,:] for i in range(len(self.model.model.layers))]
                     mono_hidden_states = [ self.model.model.layers[i].output for i in range(len(self.model.model.layers))]
 
-                    cs_outputs = self.model(**cs_inputs,ffn_intervention_position=-1, ffn_intervention=ffn_intervention,tgt_layer=intervened_ffn_layers)
+                    cs_outputs = self.model.forward(**cs_inputs,ffn_intervention_position=-1, ffn_intervention=ffn_intervention,tgt_layer=intervened_ffn_layers)
                     cs_hidden_states = [ self.model.model.layers[i].output for i in range(len(self.model.model.layers))]
 
 
