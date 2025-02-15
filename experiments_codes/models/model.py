@@ -3188,8 +3188,8 @@ class DecoderWrapper:
                         # check if the layer isnt out of bound
                         assert layer < len(mono_hidden_states)
 
-                        mono_logits = self.model.lm_head(mono_hidden_states[layer])
-                        cs_logits = self.model.lm_head(cs_hidden_states[layer])
+                        mono_logits = self.model.model.lm_head(mono_hidden_states[layer])
+                        cs_logits = self.model.model.lm_head(cs_hidden_states[layer])
 
 
                         mono_log_probs = torch.log(mono_logits.softmax(dim=-1)) # [batch*seq_length*vocab]
