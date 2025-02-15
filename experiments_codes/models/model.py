@@ -3122,7 +3122,7 @@ class DecoderWrapper:
         @return cs_rank_preds_per_layer: list of top-k predictions on all codemixed inputs just from selected layers
         @return labels: list of ground truth labels
         """
-        self.model.eval()
+        # self.model.eval()
 
         mono_rank_preds_per_layer, cs_rank_preds_per_layer = dict(), dict()
         labels = []
