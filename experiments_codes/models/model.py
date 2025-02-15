@@ -3122,7 +3122,6 @@ class DecoderWrapper:
         @return cs_rank_preds_per_layer: list of top-k predictions on all codemixed inputs just from selected layers
         @return labels: list of ground truth labels
         """
-
         self.model.eval()
 
         mono_rank_preds_per_layer, cs_rank_preds_per_layer = dict(), dict()
@@ -3139,7 +3138,6 @@ class DecoderWrapper:
             for i in tqdm(range(0, batch_cnt)):
                 batch = instances[i*batch_size:min((i+1)*batch_size, len(instances))]
                 obj_labels = [instance['obj_label'] for instance in batch]
-                cs_subj_labels = [instance['subj_label_cross_lang'] for instance in batch]
 
                 labels.extend(obj_labels)
 
@@ -3147,68 +3145,57 @@ class DecoderWrapper:
                 mono_prompts = [instance['template'].replace('[X]', instance['subj_label_same_lang']) for instance in batch]
                 cs_prompts = [instance['template'].replace('[X]', instance['subj_label_cross_lang']) for instance in batch]
 
-
-                # Get tokenized object entities
-                all_obj_tokens, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
-                # obj_token_lengths = [1 for _ in range(batch)]
+                # Get tokenized object entitis
+                # _, obj_token_lengths, max_obj_token_len = self._tokenize_obj(obj_labels)
+                # Get the next token (only for decoder model)
+                obj_token_lengths =  [1 for _ in range(batch_size)]
                 max_obj_token_len = 1
 
                 # Do n-gram masking
                 mono_prompts = self._mask_sentences(mono_prompts, obj_token_lengths)
                 cs_prompts = self._mask_sentences(cs_prompts, obj_token_lengths)
-
                 mono_inputs = self.tokenizer(mono_prompts, padding=True, truncation=True, return_tensors='pt').to('cuda')
                 cs_inputs = self.tokenizer(cs_prompts, padding=True, truncation=True, return_tensors='pt').to('cuda')
-
-                # Find subject and object positions
-                mono_subj_labels = [instance['subj_label_same_lang'] for instance in batch]
-                all_mono_subj_tokens, mono_subj_token_lengths, _ = self._tokenize_obj(mono_subj_labels)
-
-                cs_subj_labels = [instance['subj_label_cross_lang'] for instance in batch]
-                all_cs_subj_tokens, cs_subj_token_lengths, _ = self._tokenize_obj(cs_subj_labels)
-
-                # dismiss padding/special token
-                for i in range(len(all_cs_subj_tokens)):
-                    all_cs_subj_tokens[i] = all_cs_subj_tokens[i][:cs_subj_token_lengths[i]]
-
-                cs_subj_spans = self._find_span(cs_inputs['input_ids'], all_cs_subj_tokens, False)
 
                 mono_masked_rows, mono_masked_cols = self._get_mask_token_positions(mono_inputs)
                 cs_masked_rows, cs_masked_cols = self._get_mask_token_positions(cs_inputs)
 
 
+
                 # Only getting the final output
                 if len(selected_layers) == 0 or -1 in selected_layers:
-                    mono_ffn_weights, mono_outputs, _ = self.model(**mono_inputs, tgt_layers = intervened_ffn_layers, tgt_pos = mono_masked_cols)
-                    _ , cs_outputs, _ = self.model(**cs_inputs, tgt_layers = intervened_ffn_layers, tgt_pos = cs_masked_cols, all_tmp_scores = mono_ffn_weights
-                                            , suppression_constant = suppression_constant, subject_tokens_positions = cs_subj_spans)
+                    mono_outputs = self.model(**mono_inputs, output_hidden_states=True)
+                    cs_outputs = self.model(**cs_inputs, output_hidden_states=True)
 
-                    mono_log_probs = torch.log(mono_outputs.softmax(dim=-1)) # batch*seq_length*vocab
-                    cs_log_probs = torch.log(cs_outputs.softmax(dim=-1)) # batch*seq_length*vocab
+                    mono_log_probs = torch.log(mono_outputs['logits'].softmax(dim=-1)) # batch*seq_length*vocab
+                    cs_log_probs = torch.log(cs_outputs['logits'].softmax(dim=-1)) # batch*seq_length*vocab
 
-                    self._do_beam_search_with_causal_intervention(mono_masked_rows, mono_masked_cols, cs_masked_rows, cs_masked_cols, mono_log_probs, cs_log_probs
-                                         , mono_inputs, cs_inputs, beam_topk, ranking_topk, max_obj_token_len, obj_token_lengths, suppression_constant, cs_subj_spans, intervened_ffn_layers, mono_rank_preds, cs_rank_preds)
+                    self._do_beam_search(mono_masked_rows, mono_masked_cols, cs_masked_rows, cs_masked_cols, mono_log_probs, cs_log_probs, mono_inputs, cs_inputs, beam_topk, ranking_topk, max_obj_token_len, obj_token_lengths, mono_rank_preds, cs_rank_preds)
 
 
                 else:
-                    mono_ffn_weights, mono_outputs, mono_hidden_states = self.model(**mono_inputs, tgt_pos = mono_masked_cols, tgt_layers = intervened_ffn_layers)
-                    _, cs_outputs, cs_hidden_states = self.model(**cs_inputs, tgt_layers = intervened_ffn_layers, tgt_pos = cs_masked_cols, all_tmp_scores = mono_ffn_weights
-                                            , suppression_constant = suppression_constant, subject_tokens_positions = cs_subj_spans)
+                    mono_outputs = self.model(**mono_inputs)
+
+
+                    ffn_intervention = [ self.model.model.layers[i].output[:,-1:,:] for i in range(len(self.model.model.layers))]
+                    mono_hidden_states = [ self.model.model.layers[i].output for i in range(len(self.model.model.layers))]
+
+                    cs_outputs = self.model(**cs_inputs,ffn_intervention_position=-1, ffn_intervention=ffn_intervention,tgt_layer=intervened_ffn_layers)
+                    cs_hidden_states = [ self.model.model.layers[i].output for i in range(len(self.model.model.layers))]
+
 
                     for layer in  selected_layers:
                         # check if the layer isnt out of bound
                         assert layer < len(mono_hidden_states)
 
-                        mono_logits = self.model.cls(mono_hidden_states[layer])
-                        cs_logits = self.model.cls(cs_hidden_states[layer])
+                        mono_logits = self.model.lm_head(mono_hidden_states[layer])
+                        cs_logits = self.model.lm_head(cs_hidden_states[layer])
+
 
                         mono_log_probs = torch.log(mono_logits.softmax(dim=-1)) # [batch*seq_length*vocab]
                         cs_log_probs = torch.log(cs_logits.softmax(dim=-1))
 
-                        self._do_beam_search_with_causal_intervention(mono_masked_rows, mono_masked_cols, cs_masked_rows, cs_masked_cols
-                                                                       , mono_log_probs, cs_log_probs, mono_inputs, cs_inputs, beam_topk
-                                                                       , ranking_topk, max_obj_token_len, obj_token_lengths, suppression_constant, cs_subj_spans, intervened_ffn_layers
-                                                                       , mono_rank_preds_per_layer[layer], cs_rank_preds_per_layer[layer], layer)
+                        self._do_beam_search(mono_masked_rows, mono_masked_cols, cs_masked_rows, cs_masked_cols, mono_log_probs, cs_log_probs, mono_inputs, cs_inputs, beam_topk, ranking_topk, max_obj_token_len, obj_token_lengths, mono_rank_preds_per_layer[layer], cs_rank_preds_per_layer[layer], layer)
 
         if len(selected_layers) == 0 or -1 in selected_layers:
             return mono_rank_preds, cs_rank_preds, labels
