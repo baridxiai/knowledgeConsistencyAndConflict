@@ -1,0 +1,5 @@
+~/miniconda3/bin/python measure_encoder_cm_bias.py  --probed_layers 0 1 2 3 4 5 6 7 8 9 10 11 --model_name microsoft/xlm-align-base --matrix_lang en --embedded_lang ta --output_prefix ./analysis/mlama-xlm-r-align --model_type encoder
+~/miniconda3/bin/python measure_encoder_cm_bias.py  --probed_layers 0 1 2 3 4 5 6 7 8 9 10 11 --model_name microsoft/xlm-align-base --matrix_lang en --embedded_lang ta --output_prefix ./analysis/mlama-xlm-r-align --model_type encoder
+~/miniconda3/bin/python measure_encoder_cm_bias.py  --probed_layers 0 1 2 3 4 5 6 7 8 9 10 11 --model_name microsoft/xlm-align-base --matrix_lang en --embedded_lang ta --output_prefix ./analysis/mlama-xlm-r-align --model_type encoder
+~/miniconda3/bin/python measure_encoder_cm_bias.py  --probed_layers 0 1 2 3 4 5 6 7 8 9 10 11 --model_name microsoft/xlm-align-base --matrix_lang en --embedded_lang ta --output_prefix ./analysis/mlama-xlm-r-align --model_type encoder
+

@@ -1,0 +1,2 @@
+#~/miniconda3/bin/python measure_encoder_cm_bias.py  --probed_layers  0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15  --model_name meta-llama/Llama-3.2-1B-Instruct --matrix_lang en --embedded_lang de --output_prefix ./evaluations/llama-3.2-1B --model_type decoder 
+~/miniconda3/bin/python measure_encoder_cm_bias.py  --probed_layers  0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15  --model_name meta-llama/Llama-3.2-1B-Instruct --matrix_lang en --embedded_lang ar --output_prefix ./evaluations/llama-3.2-1B --model_type decoder 

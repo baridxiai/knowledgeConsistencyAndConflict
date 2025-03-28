@@ -1,0 +1,1 @@
+~/miniconda3/bin/python measure_encoder_cm_bias.py  --probed_layers 0 1 2 3 4 5 6 7 8 9 10 11 --model_name facebook/xlm-v-base --matrix_lang en --embedded_lang id --output_prefix ./analysis/mlama-xlm-r-v --model_type encoder
