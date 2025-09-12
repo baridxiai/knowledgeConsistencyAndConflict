@@ -1,6 +1,4 @@
 # Adapted implementation from https://github.com/theNamek/Bias-Neurons/blob/main/bias_neuron_src/1_analyze_mlm_bias.py\
-import os
-# os.environ["CUDA_VISIBLE_DEVICES"] = "3,2"
 from argparse import ArgumentParser
 import torch
 from tqdm import tqdm
@@ -307,5 +305,4 @@ if __name__ == '__main__':
     parser.add_argument('--model_type', type=str, choices=['encoder-decoder', 'encoder','decoder'])
 
     args = parser.parse_args()
-
     main(args)
