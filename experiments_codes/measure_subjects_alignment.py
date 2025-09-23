@@ -12,13 +12,13 @@ import numpy as np
 class CudaCKA(object):
     def __init__(self, device):
         self.device = device
-    
+
     def centering(self, K):
         n = K.shape[0]
         unit = torch.ones([n, n], device=self.device)
         I = torch.eye(n, device=self.device)
         H = I - unit / n
-        return torch.matmul(torch.matmul(H, K), H)  
+        return torch.matmul(torch.matmul(H, K), H)
 
     def rbf(self, X, sigma=None):
         GX = torch.matmul(X, X.T)
@@ -57,14 +57,14 @@ class CudaCKA(object):
 
 class CKA(object):
     def __init__(self):
-        pass 
-    
+        pass
+
     def centering(self, K):
         n = K.shape[0]
         unit = np.ones([n, n])
         I = np.eye(n)
         H = I - unit / n
-        return np.dot(np.dot(H, K), H) 
+        return np.dot(np.dot(H, K), H)
 
     def rbf(self, X, sigma=None):
         GX = np.dot(X, X.T)
@@ -75,7 +75,7 @@ class CKA(object):
         KX *= - 0.5 / (sigma * sigma)
         KX = np.exp(KX)
         return KX
- 
+
     def kernel_HSIC(self, X, Y, sigma):
         return np.sum(self.centering(self.rbf(X, sigma)) * self.centering(self.rbf(Y, sigma)))
 
@@ -110,10 +110,6 @@ def main(args):
     mono_layerwise_representations = dict()
     cs_layerwise_representations = dict()
 
-
-
-
-
     for layer in args.selected_layers:
         mono_layerwise_representations[layer] = []
         cs_layerwise_representations[layer] = []
@@ -133,7 +129,7 @@ def main(args):
 
             mono_attn_masks = mono_inputs['attention_mask'].unsqueeze(-1).detach().cpu()
             cs_attn_masks = cs_inputs['attention_mask'].unsqueeze(-1).detach().cpu()
-            
+
             mono_out_hidden_states = model(**mono_inputs, output_hidden_states=True).hidden_states[1:]
             cs_out_hidden_states = model(**cs_inputs, output_hidden_states=True).hidden_states[1:]
 
@@ -147,7 +143,7 @@ def main(args):
                 else:
                     mono_sent_embeddings = mono_out_hidden_states[layer][:,-1,:]
                     cs_sent_embeddings = cs_out_hidden_states[layer][:,-1,:]
-                
+
 
                 rep_sim = cka.kernel_CKA(mono_sent_embeddings.float(), cs_sent_embeddings.float()).detach().cpu().item()
                 if layer not in layerwise_similarity:
@@ -163,8 +159,8 @@ def main(args):
         }
 
     out_filepath = f"{args.output_prefix}_matrix-{args.matrix_lang}-embedded-{args.embedded_lang}-layerwise-representation-sim.json"
-    
-    
+
+
     with open(out_filepath, 'w') as f:
         json.dump(layerwise_similarity, f, indent=4)
 
